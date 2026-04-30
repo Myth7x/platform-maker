@@ -67,6 +67,9 @@ public:
     [[nodiscard]] bool receiveLevelSnapshot(std::uint32_t timeoutMs, LevelSnapshot& snapshot, std::string& status);
     [[nodiscard]] bool sendMovementInput(const opm::engine::InputFrame& input, std::string& status);
     [[nodiscard]] bool pollStateUpdate(std::uint32_t timeoutMs, StateUpdate& update, std::string& status);
+    void drainRosterUpdates(std::vector<std::vector<opm::protocol::PlayerInfo>>& out);
+    // Sends a Ping if `intervalMs` has elapsed since the last one. Cheap; safe to call every frame.
+    void sendPingIfDue(std::uint32_t intervalMs);
     [[nodiscard]] std::uint32_t getPingMs() const;
     [[nodiscard]] bool isConnected() const;
     void disconnect();

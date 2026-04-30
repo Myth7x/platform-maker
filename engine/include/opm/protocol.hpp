@@ -21,7 +21,8 @@ enum class MessageType : std::uint8_t {
     LobbyJoinRequest = 8,
     LobbyJoinResponse = 9,
     LevelSnapshot = 10,
-    StateUpdate = 11
+    StateUpdate = 11,
+    RosterUpdate = 12
 };
 
 struct Message {
@@ -94,5 +95,8 @@ struct StateUpdateData {
 
 [[nodiscard]] std::vector<std::uint8_t> encodeStateUpdatePayload(const StateUpdateData& update);
 [[nodiscard]] StateUpdateData decodeStateUpdatePayload(const std::vector<std::uint8_t>& payload);
+
+[[nodiscard]] std::vector<std::uint8_t> encodeRosterUpdatePayload(const std::vector<PlayerInfo>& roster);
+[[nodiscard]] std::vector<PlayerInfo> decodeRosterUpdatePayload(const std::vector<std::uint8_t>& payload);
 
 } // namespace opm::protocol

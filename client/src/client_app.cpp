@@ -35,6 +35,23 @@
 #include <png.h>
 #endif
 
+#ifdef OPM_CLIENT_HAS_STB_IMAGE
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_NO_STDIO
+#include <stb_image.h>
+#include <cstdio>
+#include <vector>
+#endif
+
+#ifdef OPM_CLIENT_HAS_IMGUI
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_opengl2.h>
+#include <charconv>
+#include <string_view>
+#endif
+
 namespace opm::client {
 namespace {
 
@@ -43,71 +60,167 @@ constexpr float kFixedStepSeconds = 1.0F / 60.0F;
 constexpr float kPlayerRenderWidthTiles = 40.0F / kPixelsPerTile;
 constexpr float kPlayerRenderHeightTiles = 40.0F / kPixelsPerTile;
 
-struct NetworkActor {
-    bool active {false};
+constexpr std::uint8_t kInvalidServerIndex = 0xFFU;
+
+struct Actor {
+    bool isLocal {false};
+    std::uint8_t serverIndex {kInvalidServerIndex};
     opm::protocol::PlayerInfo info {};
-    opm::client::net::RemotePlayerState state {};
+    opm::engine::PlayerState state {};
 };
 
-class NetworkActorManager {
+opm::engine::PlayerState remoteStateToPlayerState(const opm::client::net::RemotePlayerState& s)
+{
+    opm::engine::PlayerState p;
+    p.position.x = s.positionX;
+    p.position.y = s.positionY;
+    p.velocity.x = s.velocityX;
+    p.velocity.y = s.velocityY;
+    p.onGround = s.onGround;
+    p.facingRight = s.facingRight;
+    p.skidding = s.skidding;
+    p.crouching = s.crouching;
+    p.pSpeedActive = s.pSpeedActive;
+    p.pSpeedMeter = s.pSpeedMeter;
+    return p;
+}
+
+class ActorManager {
 public:
-    void clear()
+    void resetLocalOnly()
     {
-        for (auto& actor : actors_) {
-            actor = {};
+        actors_.clear();
+        Actor local;
+        local.isLocal = true;
+        actors_.push_back(local);
+        lastServerTick_ = 0;
+    }
+
+    Actor* localActor()
+    {
+        if (actors_.empty()) {
+            return nullptr;
+        }
+        return &actors_.front();
+    }
+
+    Actor* findByServerIndex(const std::uint8_t serverIndex)
+    {
+        for (auto& a : actors_) {
+            if (a.serverIndex == serverIndex && serverIndex != kInvalidServerIndex) {
+                return &a;
+            }
+        }
+        return nullptr;
+    }
+
+    Actor& spawnRemote(const std::uint8_t serverIndex, const opm::protocol::PlayerInfo& info = {})
+    {
+        Actor remote;
+        remote.isLocal = false;
+        remote.serverIndex = serverIndex;
+        remote.info = info;
+        actors_.push_back(remote);
+        return actors_.back();
+    }
+
+    void despawnRemote(const std::uint8_t serverIndex)
+    {
+        actors_.erase(
+            std::remove_if(actors_.begin() + (actors_.empty() ? 0 : 1), actors_.end(),
+                [serverIndex](const Actor& a) { return a.serverIndex == serverIndex; }),
+            actors_.end());
+    }
+
+    void bindLocalToServer(const std::uint8_t serverIndex)
+    {
+        if (Actor* local = localActor()) {
+            local->serverIndex = serverIndex;
         }
     }
 
-    void applyRoster(const std::vector<opm::protocol::PlayerInfo>& roster)
+    void applyRoster(const std::vector<opm::protocol::PlayerInfo>& roster, const std::uint8_t localServerIndex)
     {
         for (const auto& info : roster) {
-            if (info.playerIndex >= actors_.size()) {
+            if (info.playerIndex == localServerIndex) {
+                if (Actor* local = localActor()) {
+                    local->info = info;
+                }
                 continue;
             }
-            auto& actor = actors_[info.playerIndex];
-            actor.active = info.connected;
-            actor.info = info;
+            Actor* existing = findByServerIndex(info.playerIndex);
+            if (info.connected && existing == nullptr) {
+                spawnRemote(info.playerIndex, info);
+            } else if (!info.connected && existing != nullptr) {
+                despawnRemote(info.playerIndex);
+            } else if (existing != nullptr) {
+                existing->info = info;
+            }
         }
     }
 
-    void applyStateUpdate(const opm::client::net::StateUpdate& update)
+    void applyStateUpdate(const opm::client::net::StateUpdate& update, const std::uint8_t localServerIndex)
     {
-        for (std::size_t i = 0; i < actors_.size(); ++i) {
-            actors_[i].state = update.players[i];
-            actors_[i].active = actors_[i].active || (update.players[i].positionX != 0.0F || update.players[i].positionY != 0.0F);
-        }
         lastServerTick_ = update.serverTick;
+        for (std::size_t i = 0; i < update.players.size(); ++i) {
+            const auto serverIndex = static_cast<std::uint8_t>(i);
+            if (serverIndex == localServerIndex) {
+                if (Actor* local = localActor()) {
+                    local->state = remoteStateToPlayerState(update.players[i]);
+                }
+                continue;
+            }
+            Actor* actor = findByServerIndex(serverIndex);
+            if (actor == nullptr) {
+                // Spawning is driven exclusively by roster updates so that the
+                // server's default-spawn state for empty slots does not create
+                // phantom remote actors.
+                continue;
+            }
+            actor->state = remoteStateToPlayerState(update.players[i]);
+        }
     }
 
-    [[nodiscard]] const std::array<NetworkActor, 2>& actors() const { return actors_; }
+    void updateLocalState(const opm::engine::PlayerState& state)
+    {
+        if (Actor* local = localActor()) {
+            local->state = state;
+        }
+    }
+
+    [[nodiscard]] const std::vector<Actor>& actors() const { return actors_; }
+    [[nodiscard]] std::size_t size() const { return actors_.size(); }
     [[nodiscard]] std::uint32_t lastServerTick() const { return lastServerTick_; }
 
 private:
-    std::array<NetworkActor, 2> actors_ {};
+    std::vector<Actor> actors_;
     std::uint32_t lastServerTick_ {0};
 };
 
 struct NetworkSessionContext {
     std::unique_ptr<opm::client::net::SessionClient> session {};
     bool connected {false};
-    std::uint8_t localPlayerIndex {0xFFU};
+    std::uint8_t localPlayerIndex {kInvalidServerIndex};
     opm::engine::LevelData networkLevel {};
-    NetworkActorManager actors {};
+    ActorManager actors {};
 };
 
 NetworkSessionContext gNetwork {};
 
+#ifdef OPM_CLIENT_WITH_OPENGL_STUB
 struct Texture2D {
     GLuint handle {0};
     int width {0};
     int height {0};
 };
+#endif
 
 struct SpriteFrame {
     int col {0};
     int row {0};
 };
 
+#ifdef OPM_CLIENT_WITH_OPENGL_STUB
 struct MarioSheet {
     Texture2D texture {};
     int frameWidth {40};
@@ -120,6 +233,7 @@ struct MarioSheet {
     std::vector<int> bottomPadding {};
     SpriteFrame fallbackFrame {4, 4};
 };
+#endif
 
 struct SelectedSpriteFrame {
     SpriteFrame frame {};
@@ -186,47 +300,52 @@ opm::engine::LevelData levelFromSnapshot(const opm::client::net::LevelSnapshot& 
     return level;
 }
 
-opm::engine::PlayerState toPlayerState(const opm::client::net::RemotePlayerState& state)
+struct ConnectResult {
+    bool ok {false};
+    std::string message;
+};
+
+// Parses "host:port" (e.g. "127.0.0.1:34900"). Returns false on malformed input.
+bool parseAddress(std::string_view input, std::string& hostOut, std::uint16_t& portOut)
 {
-    opm::engine::PlayerState player;
-    player.position.x = state.positionX;
-    player.position.y = state.positionY;
-    player.velocity.x = state.velocityX;
-    player.velocity.y = state.velocityY;
-    player.onGround = state.onGround;
-    player.facingRight = state.facingRight;
-    player.skidding = state.skidding;
-    player.crouching = state.crouching;
-    player.pSpeedActive = state.pSpeedActive;
-    player.pSpeedMeter = state.pSpeedMeter;
-    return player;
+    const auto colon = input.rfind(':');
+    if (colon == std::string_view::npos || colon == 0 || colon + 1 >= input.size()) {
+        return false;
+    }
+    hostOut.assign(input.substr(0, colon));
+    const auto portStr = input.substr(colon + 1);
+    int port = 0;
+    const auto* begin = portStr.data();
+    const auto* end = portStr.data() + portStr.size();
+    auto [ptr, ec] = std::from_chars(begin, end, port);
+    if (ec != std::errc {} || ptr != end || port <= 0 || port > 65535) {
+        return false;
+    }
+    portOut = static_cast<std::uint16_t>(port);
+    return true;
 }
 
-void tryLobbyFlow()
+ConnectResult tryLobbyFlow(const std::string& host, std::uint16_t port)
 {
     if (!gNetwork.session) {
         gNetwork.session = std::make_unique<opm::client::net::SessionClient>();
     }
+    gNetwork.connected = false;
+    gNetwork.actors.resetLocalOnly();
 
     std::string status;
-    if (!gNetwork.session->connect("127.0.0.1", 34900U, 250U, status)) {
+    if (!gNetwork.session->connect(host, port, 1000U, status)) {
         std::cout << "[client] connect status: " << status << "\n";
-        gNetwork.connected = false;
-        return;
+        return {false, "connect failed: " + status};
     }
 
     std::vector<opm::client::net::LobbyInfo> lobbies;
-    if (!gNetwork.session->requestLobbyList(250U, lobbies, status)) {
+    if (!gNetwork.session->requestLobbyList(1000U, lobbies, status)) {
         std::cout << "[client] lobby request status: " << status << "\n";
-        gNetwork.connected = false;
-        return;
+        return {false, "lobby list failed: " + status};
     }
-    std::cout << "[client] lobby request status: " << status << "\n";
-
     if (lobbies.empty()) {
-        std::cout << "[client] lobby list empty or unavailable\n";
-        gNetwork.connected = false;
-        return;
+        return {false, "no lobbies advertised by server"};
     }
 
     std::cout << "[client] received " << lobbies.size() << " lobby entries\n";
@@ -236,48 +355,72 @@ void tryLobbyFlow()
     }
 
     opm::client::net::JoinResult joinResult;
-    const bool joined = gNetwork.session->joinLobby(lobbies.front().name, 250U, joinResult, status);
+    const bool joined = gNetwork.session->joinLobby(lobbies.front().name, 1000U, joinResult, status);
     std::cout << "[client] join lobby status: " << status
               << " success=" << (joined ? "true" : "false")
               << " player=" << static_cast<int>(joinResult.playerIndex)
               << " tickHz=" << joinResult.tickRateHz << "\n";
 
     if (!joined) {
-        gNetwork.connected = false;
-        return;
+        return {false, "join refused: " + status};
     }
 
     gNetwork.localPlayerIndex = joinResult.playerIndex;
-    gNetwork.actors.clear();
-    gNetwork.actors.applyRoster(joinResult.roster);
+    gNetwork.actors.bindLocalToServer(joinResult.playerIndex);
+    gNetwork.actors.applyRoster(joinResult.roster, joinResult.playerIndex);
 
     opm::client::net::LevelSnapshot snapshot;
-    if (gNetwork.session->receiveLevelSnapshot(250U, snapshot, status)) {
+    if (gNetwork.session->receiveLevelSnapshot(1000U, snapshot, status)) {
         gNetwork.networkLevel = levelFromSnapshot(snapshot);
         std::cout << "[client] level snapshot: " << snapshot.width << "x" << snapshot.height
                   << " tiles=" << snapshot.tiles.size() << " spawn=(" << snapshot.spawnX << "," << snapshot.spawnY
                   << ")\n";
     } else {
-        std::cout << "[client] level snapshot status: " << status << "\n";
+        return {false, "snapshot failed: " + status};
     }
 
     opm::client::net::StateUpdate update;
-    if (gNetwork.session->pollStateUpdate(250U, update, status)) {
-        gNetwork.actors.applyStateUpdate(update);
-        const auto& p0 = update.players[0];
-        std::cout << "[client] state update tick=" << update.serverTick
-                  << " p0=(" << p0.positionX << "," << p0.positionY << ")"
-                  << " vx=" << p0.velocityX << "\n";
+    if (gNetwork.session->pollStateUpdate(1000U, update, status)) {
+        gNetwork.actors.applyStateUpdate(update, gNetwork.localPlayerIndex);
     }
 
     gNetwork.connected = true;
-    std::cout << "[client] network session is active and kept open\n";
+    std::cout << "[client] network session active host=" << host << " port=" << port << "\n";
+    return {true, "connected"};
 }
 
 #ifdef OPM_CLIENT_WITH_OPENGL_STUB
 bool loadPngRgba(const std::filesystem::path& path, std::vector<unsigned char>& pixels, int& width, int& height)
 {
-#ifdef OPM_CLIENT_HAS_PNG
+#ifdef OPM_CLIENT_HAS_STB_IMAGE
+    FILE* file = std::fopen(path.string().c_str(), "rb");
+    if (file == nullptr) {
+        return false;
+    }
+    std::fseek(file, 0, SEEK_END);
+    const long size = std::ftell(file);
+    std::fseek(file, 0, SEEK_SET);
+    if (size <= 0) {
+        std::fclose(file);
+        return false;
+    }
+    std::vector<unsigned char> fileBytes(static_cast<std::size_t>(size));
+    if (std::fread(fileBytes.data(), 1, fileBytes.size(), file) != fileBytes.size()) {
+        std::fclose(file);
+        return false;
+    }
+    std::fclose(file);
+
+    int channels = 0;
+    unsigned char* decoded = stbi_load_from_memory(
+        fileBytes.data(), static_cast<int>(fileBytes.size()), &width, &height, &channels, 4);
+    if (decoded == nullptr) {
+        return false;
+    }
+    pixels.assign(decoded, decoded + static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U);
+    stbi_image_free(decoded);
+    return true;
+#elif defined(OPM_CLIENT_HAS_PNG)
     FILE* file = std::fopen(path.string().c_str(), "rb");
     if (file == nullptr) {
         return false;
@@ -692,7 +835,23 @@ void destroyTileTextures(std::unordered_map<std::string, GLuint>& textures)
 #endif
 
 #if defined(OPM_CLIENT_WITH_OPENGL_STUB) || defined(OPM_CLIENT_WITH_VULKAN)
-int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engine::LevelData& level)
+
+enum class AppState {
+    MainMenu,
+    Playing,
+};
+
+struct GameSession {
+    AppState state {AppState::MainMenu};
+    bool isOnline {false};
+    opm::engine::Simulation simulation;
+    opm::engine::LevelData activeLevel;
+    std::vector<opm::client::render::TileDrawEntry> entries;
+    char addressInput[64] {"127.0.0.1:34900"};
+    std::string menuStatus;
+};
+
+int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engine::LevelData& fallbackLevel)
 {
     if (glfwInit() == GLFW_FALSE) {
         std::cerr << "[client] failed to initialize GLFW\n";
@@ -718,14 +877,12 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 #endif
 
-    GLFWwindow* window = glfwCreateWindow(1280, 720, "Open Platformer Maker - Basic Level", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(800, 600, "Open Platformer Maker", nullptr, nullptr);
     if (window == nullptr) {
         std::cerr << "[client] failed to create GLFW window\n";
         glfwTerminate();
         return 1;
     }
-
-    const auto entries = opm::client::render::buildTileLayerDrawEntries(manifest, level.groundLayer, kPixelsPerTile);
 
 #ifdef OPM_CLIENT_WITH_OPENGL_STUB
     glfwMakeContextCurrent(window);
@@ -751,8 +908,27 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
     };
 #endif
 
-    opm::engine::Simulation simulation;
-    simulation.setLevel(level);
+#ifdef OPM_CLIENT_HAS_IMGUI
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    (void)io;
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL2_Init();
+#endif
+
+    GameSession session {};
+
+    auto enterPlaying = [&](bool online, const opm::engine::LevelData& levelData) {
+        session.activeLevel = levelData;
+        session.entries = opm::client::render::buildTileLayerDrawEntries(manifest, levelData.groundLayer, kPixelsPerTile);
+        session.simulation.setLevel(levelData);
+        session.isOnline = online;
+        session.state = AppState::Playing;
+        std::cout << "[client] entered playing mode online=" << (online ? "true" : "false")
+                  << " level=" << levelData.groundLayer.width << "x" << levelData.groundLayer.height << "\n";
+    };
 
     bool jumpHeldLast = false;
     double previousTime = glfwGetTime();
@@ -762,76 +938,116 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        const double now = glfwGetTime();
-        double frameTime = now - previousTime;
-        previousTime = now;
-        if (frameTime > 0.1) {
-            frameTime = 0.1;
-        }
-        accumulator += frameTime;
+#ifdef OPM_CLIENT_HAS_IMGUI
+        ImGui_ImplOpenGL2_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+#endif
 
-        while (accumulator >= kFixedStepSeconds) {
-            const bool moveLeft =
-                glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ||
-                glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS;
-            const bool moveRight =
-                glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ||
-                glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS;
-            const bool jumpHeld =
-                glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS ||
-                glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS;
-            const bool runHeld =
-                glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
-                glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
-            const bool crouchHeld =
-                glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ||
-                glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS;
-
-            // Always run local simulation for input responsiveness (local prediction)
-            std::array<opm::engine::InputFrame, 2> inputs {};
-            inputs[0].frameIndex = simulation.state().tick;
-            inputs[0].moveLeft = moveLeft;
-            inputs[0].moveRight = moveRight;
-            inputs[0].jumpPressed = jumpHeld && !jumpHeldLast;
-            inputs[0].jumpHeld = jumpHeld;
-            inputs[0].runHeld = runHeld;
-            inputs[0].crouchHeld = crouchHeld;
-            inputs[1].frameIndex = simulation.state().tick;
-            simulation.step(inputs);
-
-            if (gNetwork.connected && gNetwork.session) {
-                std::string netStatus;
-                opm::engine::InputFrame networkInput {};
-                networkInput.frameIndex = gNetwork.actors.lastServerTick();
-                networkInput.moveLeft = moveLeft;
-                networkInput.moveRight = moveRight;
-                networkInput.jumpPressed = jumpHeld && !jumpHeldLast;
-                networkInput.jumpHeld = jumpHeld;
-                networkInput.runHeld = runHeld;
-                networkInput.crouchHeld = crouchHeld;
-                (void)gNetwork.session->sendMovementInput(networkInput, netStatus);
-
-                opm::client::net::StateUpdate update;
-                if (gNetwork.session->pollStateUpdate(1U, update, netStatus)) {
-                    gNetwork.actors.applyStateUpdate(update);
-                }
+        // ---- Tick gameplay (fixed-step, only while playing) ----
+        if (session.state == AppState::Playing) {
+            const double now = glfwGetTime();
+            double frameTime = now - previousTime;
+            previousTime = now;
+            if (frameTime > 0.1) {
+                frameTime = 0.1;
             }
+            accumulator += frameTime;
 
-            jumpHeldLast = jumpHeld;
-            animationTime += kFixedStepSeconds;
-            accumulator -= kFixedStepSeconds;
+            while (accumulator >= kFixedStepSeconds) {
+#ifdef OPM_CLIENT_HAS_IMGUI
+                const bool imguiCapturesKeyboard = ImGui::GetIO().WantCaptureKeyboard;
+#else
+                const bool imguiCapturesKeyboard = false;
+#endif
+                const bool moveLeft = !imguiCapturesKeyboard &&
+                    (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ||
+                     glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS);
+                const bool moveRight = !imguiCapturesKeyboard &&
+                    (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ||
+                     glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS);
+                const bool jumpHeld = !imguiCapturesKeyboard &&
+                    (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS ||
+                     glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS);
+                const bool runHeld = !imguiCapturesKeyboard &&
+                    (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                     glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
+                const bool crouchHeld = !imguiCapturesKeyboard &&
+                    (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ||
+                     glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS);
+
+                if (session.isOnline && gNetwork.session) {
+                    std::string netStatus;
+
+                    opm::client::net::StateUpdate update;
+                    bool gotTick = false;
+                    while (gNetwork.session->pollStateUpdate(0U, update, netStatus)) {
+                        gNetwork.actors.applyStateUpdate(update, gNetwork.localPlayerIndex);
+                        gotTick = true;
+                    }
+
+                    std::vector<std::vector<opm::protocol::PlayerInfo>> rosterUpdates;
+                    gNetwork.session->drainRosterUpdates(rosterUpdates);
+                    for (const auto& roster : rosterUpdates) {
+                        gNetwork.actors.applyRoster(roster, gNetwork.localPlayerIndex);
+                    }
+
+                    gNetwork.session->sendPingIfDue(500U);
+
+                    if (gotTick) {
+                        opm::engine::InputFrame networkInput {};
+                        networkInput.frameIndex = gNetwork.actors.lastServerTick();
+                        networkInput.moveLeft = moveLeft;
+                        networkInput.moveRight = moveRight;
+                        networkInput.jumpPressed = jumpHeld && !jumpHeldLast;
+                        networkInput.jumpHeld = jumpHeld;
+                        networkInput.runHeld = runHeld;
+                        networkInput.crouchHeld = crouchHeld;
+                        (void)gNetwork.session->sendMovementInput(networkInput, netStatus);
+                    }
+                } else {
+                    // Offline single-player: run local simulation.
+                    std::array<opm::engine::InputFrame, 2> inputs {};
+                    inputs[0].frameIndex = session.simulation.state().tick;
+                    inputs[0].moveLeft = moveLeft;
+                    inputs[0].moveRight = moveRight;
+                    inputs[0].jumpPressed = jumpHeld && !jumpHeldLast;
+                    inputs[0].jumpHeld = jumpHeld;
+                    inputs[0].runHeld = runHeld;
+                    inputs[0].crouchHeld = crouchHeld;
+                    inputs[1].frameIndex = session.simulation.state().tick;
+                    session.simulation.step(inputs);
+                    gNetwork.actors.updateLocalState(session.simulation.state().players[0]);
+                }
+
+                jumpHeldLast = jumpHeld;
+                animationTime += kFixedStepSeconds;
+                accumulator -= kFixedStepSeconds;
+            }
+        } else {
+            // Reset frame timing while in menu so we don't burst-step on entry.
+            previousTime = glfwGetTime();
+            accumulator = 0.0;
+            jumpHeldLast = false;
         }
 
+        // ---- Render ----
 #ifdef OPM_CLIENT_WITH_OPENGL_STUB
         int framebufferWidth = 0;
         int framebufferHeight = 0;
         glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
         if (framebufferWidth <= 0 || framebufferHeight <= 0) {
+#ifdef OPM_CLIENT_HAS_IMGUI
+            ImGui::EndFrame();
+#endif
             continue;
         }
 
         glViewport(0, 0, framebufferWidth, framebufferHeight);
-        glClearColor(0.53F, 0.75F, 0.92F, 1.0F);
+        glClearColor(0.10F, 0.12F, 0.16F, 1.0F);
+        if (session.state == AppState::Playing) {
+            glClearColor(0.53F, 0.75F, 0.92F, 1.0F);
+        }
         glClear(GL_COLOR_BUFFER_BIT);
 
         glMatrixMode(GL_PROJECTION);
@@ -840,124 +1056,190 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
         glMatrixMode(GL_MODELVIEW);
         glLoadIdentity();
 
-        // Always use local simulation for camera (local prediction)
-        opm::engine::PlayerState cameraPlayer = simulation.state().players[0];
-
-        const float playerCenterPixels = (cameraPlayer.position.x + (opm::engine::kPlayerWidthTiles * 0.5F)) * kPixelsPerTile;
-        float cameraX = playerCenterPixels - static_cast<float>(framebufferWidth) * 0.35F;
-        if (cameraX < 0.0F) {
-            cameraX = 0.0F;
-        }
-
-        const float worldWidthPixels = static_cast<float>(level.groundLayer.width) * kPixelsPerTile;
-        const float maxCameraX = std::max(0.0F, worldWidthPixels - static_cast<float>(framebufferWidth));
-        if (cameraX > maxCameraX) {
-            cameraX = maxCameraX;
-        }
-
-        for (const auto& entry : entries) {
-            const float x0 = entry.worldX - cameraX;
-            const float y0 = entry.worldY;
-            const float x1 = x0 + entry.tileSize;
-            const float y1 = y0 + entry.tileSize;
-
-            if (x1 < 0.0F || x0 > static_cast<float>(framebufferWidth)) {
-                continue;
+        if (session.state == AppState::Playing) {
+            opm::engine::PlayerState cameraPlayer {};
+            if (!gNetwork.actors.actors().empty()) {
+                cameraPlayer = gNetwork.actors.actors().front().state;
             }
 
-            const auto it = textures.find(entry.tileAssetId);
-            if (it != textures.end()) {
-                glBindTexture(GL_TEXTURE_2D, it->second);
-                glColor3f(1.0F, 1.0F, 1.0F);
-
-                glBegin(GL_QUADS);
-                glTexCoord2f(0.0F, 1.0F);
-                glVertex2f(x0, y0);
-                glTexCoord2f(1.0F, 1.0F);
-                glVertex2f(x1, y0);
-                glTexCoord2f(1.0F, 0.0F);
-                glVertex2f(x1, y1);
-                glTexCoord2f(0.0F, 0.0F);
-                glVertex2f(x0, y1);
-                glEnd();
-            } else {
-                float r = 0.5F;
-                float g = 0.8F;
-                float b = 0.3F;
-                colorForAsset(entry.tileAssetId, r, g, b);
-                glBindTexture(GL_TEXTURE_2D, 0);
-                glColor3f(r, g, b);
-
-                glBegin(GL_QUADS);
-                glVertex2f(x0, y0);
-                glVertex2f(x1, y0);
-                glVertex2f(x1, y1);
-                glVertex2f(x0, y1);
-                glEnd();
+            const float playerCenterPixels = (cameraPlayer.position.x + (opm::engine::kPlayerWidthTiles * 0.5F)) * kPixelsPerTile;
+            float cameraX = playerCenterPixels - static_cast<float>(framebufferWidth) * 0.35F;
+            if (cameraX < 0.0F) {
+                cameraX = 0.0F;
             }
-        }
 
-        const float bodyWidthPixels = opm::engine::kPlayerWidthTiles * kPixelsPerTile;
-        const float renderWidthPixels = kPlayerRenderWidthTiles * kPixelsPerTile;
-        const float renderHeightPixels = kPlayerRenderHeightTiles * kPixelsPerTile;
+            const float worldWidthPixels = static_cast<float>(session.activeLevel.groundLayer.width) * kPixelsPerTile;
+            const float maxCameraX = std::max(0.0F, worldWidthPixels - static_cast<float>(framebufferWidth));
+            if (cameraX > maxCameraX) {
+                cameraX = maxCameraX;
+            }
 
-        // Render local player from simulation (local prediction), remote players from network
-        std::array<opm::engine::PlayerState, 2> playersToDraw {
-            simulation.state().players[0],
-            simulation.state().players[1],
-        };
-        if (gNetwork.connected && gNetwork.localPlayerIndex < 2) {
-            // Only update remote players from network state, not the local player
-            for (std::size_t i = 0; i < playersToDraw.size(); ++i) {
-                if (i != gNetwork.localPlayerIndex && gNetwork.actors.actors()[i].active) {
-                    playersToDraw[i] = toPlayerState(gNetwork.actors.actors()[i].state);
+            for (const auto& entry : session.entries) {
+                const float x0 = entry.worldX - cameraX;
+                const float y0 = entry.worldY;
+                const float x1 = x0 + entry.tileSize;
+                const float y1 = y0 + entry.tileSize;
+
+                if (x1 < 0.0F || x0 > static_cast<float>(framebufferWidth)) {
+                    continue;
+                }
+
+                const auto it = textures.find(entry.tileAssetId);
+                if (it != textures.end()) {
+                    glBindTexture(GL_TEXTURE_2D, it->second);
+                    glColor3f(1.0F, 1.0F, 1.0F);
+
+                    glBegin(GL_QUADS);
+                    glTexCoord2f(0.0F, 1.0F);
+                    glVertex2f(x0, y0);
+                    glTexCoord2f(1.0F, 1.0F);
+                    glVertex2f(x1, y0);
+                    glTexCoord2f(1.0F, 0.0F);
+                    glVertex2f(x1, y1);
+                    glTexCoord2f(0.0F, 0.0F);
+                    glVertex2f(x0, y1);
+                    glEnd();
+                } else {
+                    float r = 0.5F;
+                    float g = 0.8F;
+                    float b = 0.3F;
+                    colorForAsset(entry.tileAssetId, r, g, b);
+                    glBindTexture(GL_TEXTURE_2D, 0);
+                    glColor3f(r, g, b);
+
+                    glBegin(GL_QUADS);
+                    glVertex2f(x0, y0);
+                    glVertex2f(x1, y0);
+                    glVertex2f(x1, y1);
+                    glVertex2f(x0, y1);
+                    glEnd();
                 }
             }
-        }
 
-        for (const auto& player : playersToDraw) {
-            const float playerX0 = (player.position.x * kPixelsPerTile) - cameraX - (renderWidthPixels - bodyWidthPixels) * 0.5F;
-            const float playerY0 = player.position.y * kPixelsPerTile;
-            const float playerX1 = playerX0 + renderWidthPixels;
-            const float playerY1 = playerY0 + renderHeightPixels;
+            const float bodyWidthPixels = opm::engine::kPlayerWidthTiles * kPixelsPerTile;
+            const float renderWidthPixels = kPlayerRenderWidthTiles * kPixelsPerTile;
+            const float renderHeightPixels = kPlayerRenderHeightTiles * kPixelsPerTile;
 
-            if (mario.texture.handle != 0) {
-                const SelectedSpriteFrame selected = selectMarioFrame(mario, player, animationTime);
-                const SpriteFrame frame = makeVisibleFrame(mario, selected.frame);
-                const float groundOffset = frameGroundOffsetPixels(mario, frame, renderHeightPixels);
-                drawSpriteFrame(mario, frame, selected.flipX, playerX0, playerY0 - groundOffset, playerX1, playerY1 - groundOffset);
-            } else {
-                drawDebugPlayerBody(playerX0, playerY0, playerX1, playerY1);
-                glBindTexture(GL_TEXTURE_2D, 0);
-                glColor3f(0.95F, 0.2F, 0.2F);
-                glBegin(GL_QUADS);
-                glVertex2f(playerX0, playerY0);
-                glVertex2f(playerX1, playerY0);
-                glVertex2f(playerX1, playerY1);
-                glVertex2f(playerX0, playerY1);
-                glEnd();
+            for (const auto& actor : gNetwork.actors.actors()) {
+                const auto& player = actor.state;
+                const float playerX0 = (player.position.x * kPixelsPerTile) - cameraX - (renderWidthPixels - bodyWidthPixels) * 0.5F;
+                const float playerY0 = player.position.y * kPixelsPerTile;
+                const float playerX1 = playerX0 + renderWidthPixels;
+                const float playerY1 = playerY0 + renderHeightPixels;
+
+                if (mario.texture.handle != 0) {
+                    const SelectedSpriteFrame selected = selectMarioFrame(mario, player, animationTime);
+                    const SpriteFrame frame = makeVisibleFrame(mario, selected.frame);
+                    const float groundOffset = frameGroundOffsetPixels(mario, frame, renderHeightPixels);
+                    drawSpriteFrame(mario, frame, selected.flipX, playerX0, playerY0 - groundOffset, playerX1, playerY1 - groundOffset);
+                } else {
+                    drawDebugPlayerBody(playerX0, playerY0, playerX1, playerY1);
+                    glBindTexture(GL_TEXTURE_2D, 0);
+                    glColor3f(0.95F, 0.2F, 0.2F);
+                    glBegin(GL_QUADS);
+                    glVertex2f(playerX0, playerY0);
+                    glVertex2f(playerX1, playerY0);
+                    glVertex2f(playerX1, playerY1);
+                    glVertex2f(playerX0, playerY1);
+                    glEnd();
+                }
             }
+
+            const opm::engine::PlayerState hudPlayer = cameraPlayer;
+            drawPSpeedHud(hudPlayer.pSpeedMeter, hudPlayer.pSpeedActive, framebufferWidth, framebufferHeight);
+        }
+#endif
+
+        // ---- Build menu UI (state == MainMenu) ----
+#ifdef OPM_CLIENT_HAS_IMGUI
+        if (session.state == AppState::MainMenu) {
+            ImGuiViewport* vp = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(
+                ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5F, vp->WorkPos.y + vp->WorkSize.y * 0.5F),
+                ImGuiCond_Always, ImVec2(0.5F, 0.5F));
+            ImGui::SetNextWindowSize(ImVec2(440.0F, 0.0F));
+            ImGui::Begin("Open Platformer Maker", nullptr,
+                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
+
+            ImGui::TextUnformatted("Choose a mode to start.");
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            if (ImGui::Button("Play Offline", ImVec2(-1.0F, 36.0F))) {
+                gNetwork.connected = false;
+                gNetwork.localPlayerIndex = kInvalidServerIndex;
+                gNetwork.actors.resetLocalOnly();
+                enterPlaying(false, fallbackLevel);
+                session.menuStatus.clear();
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Online server (host:port)");
+            ImGui::SetNextItemWidth(-1.0F);
+            ImGui::InputText("##address", session.addressInput, sizeof(session.addressInput));
+
+            if (ImGui::Button("Play Online", ImVec2(-1.0F, 36.0F))) {
+                std::string host;
+                std::uint16_t port = 0;
+                if (!parseAddress(session.addressInput, host, port)) {
+                    session.menuStatus = "Invalid address. Use host:port (e.g. 127.0.0.1:34900).";
+                } else {
+                    const auto result = tryLobbyFlow(host, port);
+                    if (result.ok) {
+                        enterPlaying(true, gNetwork.networkLevel);
+                        session.menuStatus.clear();
+                    } else {
+                        session.menuStatus = result.message;
+                    }
+                }
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            if (ImGui::Button("Quit", ImVec2(-1.0F, 28.0F))) {
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            }
+
+            if (!session.menuStatus.empty()) {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(1.0F, 0.55F, 0.45F, 1.0F), "%s", session.menuStatus.c_str());
+            }
+            ImGui::End();
         }
 
-        const opm::engine::PlayerState hudPlayer = playersToDraw[0];
-        drawPSpeedHud(hudPlayer.pSpeedMeter, hudPlayer.pSpeedActive, framebufferWidth, framebufferHeight);
+        ImGui::Render();
+        ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
+#endif
 
-        // Update window title with connection status and ping
-        if (gNetwork.session) {
+        // ---- Window title ----
+        if (session.state == AppState::MainMenu) {
+            glfwSetWindowTitle(window, "Open Platformer Maker");
+        } else if (session.isOnline && gNetwork.session) {
             const bool netConnected = gNetwork.session->isConnected();
             const std::uint32_t pingMs = gNetwork.session->getPingMs();
-            std::string title = "Open Platformer Maker - Basic Level";
+            std::string title = "Open Platformer Maker - Online";
             if (netConnected) {
-                title += " [CONNECTED - Ping: " + std::to_string(pingMs) + "ms]";
+                title += " [Ping: " + std::to_string(pingMs) + "ms]";
             } else {
                 title += " [DISCONNECTED]";
             }
             glfwSetWindowTitle(window, title.c_str());
+        } else {
+            glfwSetWindowTitle(window, "Open Platformer Maker - Offline");
         }
 
         glfwSwapBuffers(window);
-#endif
     }
+
+#ifdef OPM_CLIENT_HAS_IMGUI
+    ImGui_ImplOpenGL2_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+#endif
 
 #ifdef OPM_CLIENT_WITH_OPENGL_STUB
     if (mario.texture.handle != 0) {
@@ -976,27 +1258,15 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
 
 int ClientApp::run()
 {
+    std::cout << std::unitbuf;
+    std::cerr << std::unitbuf;
     const auto manifest = loadAndPrintAssetSummary(OPM_CLIENT_RESOURCE_DIR);
     const auto fallbackLevel = opm::engine::createBasicLevel(220U, 16U);
     printTileLayerStubSummary(manifest, fallbackLevel);
-    tryLobbyFlow();
-
-    const auto& runtimeLevel = (gNetwork.connected ? gNetwork.networkLevel : fallbackLevel);
-
-    opm::engine::Simulation simulation;
-    simulation.setLevel(runtimeLevel);
-    std::cout << "[client] initial simulation hash: " << simulation.stateHash() << "\n";
-
-    const auto encoded = opm::protocol::encodeMessage(
-        opm::protocol::Message {
-            .type = opm::protocol::MessageType::LobbyListRequest,
-            .payload = opm::protocol::payloadFromString("request_lobbies")
-        }
-    );
-    std::cout << "[client] protocol packet size for lobby request: " << encoded.size() << " bytes\n";
+    gNetwork.actors.resetLocalOnly();
 
 #if defined(OPM_CLIENT_WITH_OPENGL_STUB) || defined(OPM_CLIENT_WITH_VULKAN)
-    return runClientWindow(manifest, runtimeLevel);
+    return runClientWindow(manifest, fallbackLevel);
 #else
     std::cout << "[client] No local graphics backend available at configure-time. Running stub mode.\n";
     return 0;

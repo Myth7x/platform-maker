@@ -408,4 +408,41 @@ StateUpdateData decodeStateUpdatePayload(const std::vector<std::uint8_t>& payloa
     return update;
 }
 
+std::vector<std::uint8_t> encodeRosterUpdatePayload(const std::vector<PlayerInfo>& roster)
+{
+    std::vector<std::uint8_t> out;
+    writeU32(out, static_cast<std::uint32_t>(roster.size()));
+    for (const auto& info : roster) {
+        out.push_back(info.playerIndex);
+        writeBool(out, info.connected);
+        out.push_back(info.colorR);
+        out.push_back(info.colorG);
+        out.push_back(info.colorB);
+        writeString(out, info.displayName);
+    }
+    return out;
+}
+
+std::vector<PlayerInfo> decodeRosterUpdatePayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    const std::uint32_t count = reader.readU32();
+    std::vector<PlayerInfo> roster;
+    roster.reserve(static_cast<std::size_t>(count));
+    for (std::uint32_t i = 0; i < count; ++i) {
+        PlayerInfo info;
+        info.playerIndex = reader.readU8();
+        info.connected = reader.readBool();
+        info.colorR = reader.readU8();
+        info.colorG = reader.readU8();
+        info.colorB = reader.readU8();
+        info.displayName = reader.readString();
+        roster.push_back(info);
+    }
+    if (!reader.done()) {
+        throw std::runtime_error("Roster update payload has trailing bytes");
+    }
+    return roster;
+}
+
 } // namespace opm::protocol
