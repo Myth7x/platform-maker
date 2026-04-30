@@ -1,0 +1,8 @@
+imgui.ini
+build/*
+dist/*
+*.log
+*.tmp
+*.so
+*.dylib
+output/*
