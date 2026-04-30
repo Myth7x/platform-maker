@@ -679,60 +679,6 @@ void drawPSpeedHud(const float meterValue, const bool pSpeedActive, const int fr
     glEnd();
 }
 
-void drawNetworkHud(const bool connected, const std::uint32_t pingMs, const int framebufferWidth, const int framebufferHeight)
-{
-    (void)framebufferWidth;
-    const float x = 12.0F;
-    const float y = static_cast<float>(framebufferHeight) - 32.0F;
-    const float h = 8.0F;
-
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    // Background box
-    glColor4f(0.06F, 0.08F, 0.10F, 0.75F);
-    glBegin(GL_QUADS);
-    glVertex2f(x - 2.0F, y - 2.0F);
-    glVertex2f(x + 100.0F, y - 2.0F);
-    glVertex2f(x + 100.0F, y + h + 2.0F);
-    glVertex2f(x - 2.0F, y + h + 2.0F);
-    glEnd();
-
-    // Connection indicator dot - color based on ping
-    float pingR = 0.2F, pingG = 1.0F, pingB = 0.2F;  // Green by default
-    if (!connected) {
-        pingR = 1.0F;
-        pingG = 0.2F;  // Red if disconnected
-        pingB = 0.2F;
-    } else if (pingMs > 100) {
-        pingR = 1.0F;
-        pingG = 0.8F;  // Yellow if high ping
-        pingB = 0.2F;
-    } else if (pingMs > 50) {
-        pingR = 0.2F;
-        pingG = 1.0F;  // Green-yellow
-        pingB = 0.2F;
-    }
-
-    glColor3f(pingR, pingG, pingB);
-    glBegin(GL_TRIANGLE_FAN);
-    const float dotRadius = 2.5F;
-    for (int i = 0; i <= 12; ++i) {
-        const float angle = (static_cast<float>(i) / 12.0F) * 3.14159F * 2.0F;
-        glVertex2f(x + 8.0F + dotRadius * std::cos(angle), y + 4.0F + dotRadius * std::sin(angle));
-    }
-    glEnd();
-
-    // Text would be: "[●] Connected - Ping: XXms"
-    // Since we don't have text rendering, we'll draw a simple border to indicate status
-    glColor3f(0.95F, 0.95F, 0.95F);
-    glBegin(GL_LINE_LOOP);
-    glVertex2f(x, y);
-    glVertex2f(x + 100.0F, y);
-    glVertex2f(x + 100.0F, y + h);
-    glVertex2f(x, y + h);
-    glEnd();
-}
-
 void destroyTileTextures(std::unordered_map<std::string, GLuint>& textures)
 {
     for (auto& [id, texture] : textures) {
@@ -894,13 +840,8 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
         glMatrixMode(GL_MODELVIEW);
         glLoadIdentity();
 
+        // Always use local simulation for camera (local prediction)
         opm::engine::PlayerState cameraPlayer = simulation.state().players[0];
-        if (gNetwork.connected && gNetwork.localPlayerIndex < gNetwork.actors.actors().size()) {
-            const auto& localActor = gNetwork.actors.actors()[gNetwork.localPlayerIndex];
-            if (localActor.active) {
-                cameraPlayer = toPlayerState(localActor.state);
-            }
-        }
 
         const float playerCenterPixels = (cameraPlayer.position.x + (opm::engine::kPlayerWidthTiles * 0.5F)) * kPixelsPerTile;
         float cameraX = playerCenterPixels - static_cast<float>(framebufferWidth) * 0.35F;
@@ -960,13 +901,15 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
         const float renderWidthPixels = kPlayerRenderWidthTiles * kPixelsPerTile;
         const float renderHeightPixels = kPlayerRenderHeightTiles * kPixelsPerTile;
 
+        // Render local player from simulation (local prediction), remote players from network
         std::array<opm::engine::PlayerState, 2> playersToDraw {
             simulation.state().players[0],
             simulation.state().players[1],
         };
-        if (gNetwork.connected) {
+        if (gNetwork.connected && gNetwork.localPlayerIndex < 2) {
+            // Only update remote players from network state, not the local player
             for (std::size_t i = 0; i < playersToDraw.size(); ++i) {
-                if (gNetwork.actors.actors()[i].active) {
+                if (i != gNetwork.localPlayerIndex && gNetwork.actors.actors()[i].active) {
                     playersToDraw[i] = toPlayerState(gNetwork.actors.actors()[i].state);
                 }
             }
@@ -996,17 +939,20 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
             }
         }
 
-        const opm::engine::PlayerState hudPlayer =
-            (gNetwork.connected && gNetwork.localPlayerIndex < playersToDraw.size())
-                ? playersToDraw[gNetwork.localPlayerIndex]
-                : playersToDraw[0];
+        const opm::engine::PlayerState hudPlayer = playersToDraw[0];
         drawPSpeedHud(hudPlayer.pSpeedMeter, hudPlayer.pSpeedActive, framebufferWidth, framebufferHeight);
 
-        // Draw network status and ping if connected
+        // Update window title with connection status and ping
         if (gNetwork.session) {
             const bool netConnected = gNetwork.session->isConnected();
             const std::uint32_t pingMs = gNetwork.session->getPingMs();
-            drawNetworkHud(netConnected, pingMs, framebufferWidth, framebufferHeight);
+            std::string title = "Open Platformer Maker - Basic Level";
+            if (netConnected) {
+                title += " [CONNECTED - Ping: " + std::to_string(pingMs) + "ms]";
+            } else {
+                title += " [DISCONNECTED]";
+            }
+            glfwSetWindowTitle(window, title.c_str());
         }
 
         glfwSwapBuffers(window);
