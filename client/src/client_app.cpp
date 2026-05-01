@@ -1,5 +1,7 @@
 #include "client_app.hpp"
 
+#include "game/actor_manager.hpp"
+#include "game/level_editor.hpp"
 #include "net_client.hpp"
 #include "render/asset_registry.hpp"
 #include "render/render_context.hpp"
@@ -57,167 +59,11 @@ constexpr float kFixedStepSeconds = 1.0F / 60.0F;
 constexpr float kPlayerRenderWidthTiles = 40.0F / kPixelsPerTile;
 constexpr float kPlayerRenderHeightTiles = 40.0F / kPixelsPerTile;
 
-constexpr std::uint16_t kInvalidServerIndex = 0xFFFFU;
+using opm::client::game::Actor;
+using opm::client::game::ActorManager;
+using opm::client::game::kInvalidServerIndex;
+using opm::client::game::remoteStateToPlayerState;
 
-struct Actor {
-    bool isLocal {false};
-    std::uint16_t serverIndex {kInvalidServerIndex};
-    opm::protocol::PlayerInfo info {};
-    opm::engine::PlayerState state {};
-};
-
-opm::engine::PlayerState remoteStateToPlayerState(const opm::client::net::RemotePlayerState& s)
-{
-    opm::engine::PlayerState p;
-    p.position.x = s.positionX;
-    p.position.y = s.positionY;
-    p.velocity.x = s.velocityX;
-    p.velocity.y = s.velocityY;
-    p.onGround = s.onGround;
-    p.facingRight = s.facingRight;
-    p.skidding = s.skidding;
-    p.crouching = s.crouching;
-    p.pSpeedActive = s.pSpeedActive;
-    p.pSpeedMeter = s.pSpeedMeter;
-    p.style = static_cast<opm::engine::PlayerStyle>(s.style);
-    p.powerupTransitionFrames = s.powerupTransitionFrames;
-    p.invincibilityFrames = s.invincibilityFrames;
-    return p;
-}
-
-class ActorManager {
-public:
-    void resetLocalOnly()
-    {
-        actors_.clear();
-        Actor local;
-        local.isLocal = true;
-        actors_.push_back(local);
-        lastServerTick_ = 0;
-    }
-
-    Actor* localActor()
-    {
-        if (actors_.empty()) {
-            return nullptr;
-        }
-        return &actors_.front();
-    }
-
-    Actor* findByServerIndex(const std::uint16_t serverIndex)
-    {
-        for (auto& a : actors_) {
-            if (a.serverIndex == serverIndex && serverIndex != kInvalidServerIndex) {
-                return &a;
-            }
-        }
-        return nullptr;
-    }
-
-    Actor& spawnRemote(const std::uint16_t serverIndex, const opm::protocol::PlayerInfo& info = {})
-    {
-        Actor remote;
-        remote.isLocal = false;
-        remote.serverIndex = serverIndex;
-        remote.info = info;
-        actors_.push_back(remote);
-        return actors_.back();
-    }
-
-    void despawnRemote(const std::uint16_t serverIndex)
-    {
-        actors_.erase(
-            std::remove_if(actors_.begin() + (actors_.empty() ? 0 : 1), actors_.end(),
-                [serverIndex](const Actor& a) { return a.serverIndex == serverIndex; }),
-            actors_.end());
-    }
-
-    void bindLocalToServer(const std::uint16_t serverIndex)
-    {
-        if (Actor* local = localActor()) {
-            local->serverIndex = serverIndex;
-        }
-    }
-
-    void applyRoster(const std::vector<opm::protocol::PlayerInfo>& roster, const std::uint16_t localServerIndex)
-    {
-        for (const auto& info : roster) {
-            if (info.playerIndex == localServerIndex) {
-                if (Actor* local = localActor()) {
-                    local->info = info;
-                }
-                continue;
-            }
-            Actor* existing = findByServerIndex(info.playerIndex);
-            if (info.connected && existing == nullptr) {
-                spawnRemote(info.playerIndex, info);
-            } else if (!info.connected && existing != nullptr) {
-                despawnRemote(info.playerIndex);
-            } else if (existing != nullptr) {
-                existing->info = info;
-            }
-        }
-    }
-
-    void applyStateUpdate(const opm::client::net::StateUpdate& update, const std::uint16_t localServerIndex)
-    {
-        lastServerTick_ = update.serverTick;
-        // Wire format is sparse — each record carries its own slotIndex.
-        // Don't use the array position; the server only sends active slots.
-        for (const auto& netPlayer : update.players) {
-            const auto serverIndex = netPlayer.slotIndex;
-            if (serverIndex == localServerIndex) {
-                if (Actor* local = localActor()) {
-                    local->state = remoteStateToPlayerState(netPlayer);
-                }
-                continue;
-            }
-            Actor* actor = findByServerIndex(serverIndex);
-            if (actor == nullptr) {
-                // Spawning is driven exclusively by roster updates so that the
-                // server's default-spawn state for empty slots does not create
-                // phantom remote actors.
-                continue;
-            }
-            actor->state = remoteStateToPlayerState(netPlayer);
-        }
-        worldActors_.clear();
-        worldActors_.reserve(update.actors.size());
-        for (const auto& a : update.actors) {
-            opm::engine::ActorState s {};
-            s.position = {a.positionX, a.positionY};
-            s.velocity = {a.velocityX, a.velocityY};
-            s.alive = a.alive;
-            s.facingRight = a.facingRight;
-            s.script = static_cast<opm::engine::ActorScript>(a.script);
-            s.enemyKind = a.enemyKind;
-            s.category = static_cast<opm::engine::ActorCategory>(a.category);
-            worldActors_.push_back(s);
-        }
-    }
-
-    void setWorldActors(const std::vector<opm::engine::ActorState>& actors)
-    {
-        worldActors_ = actors;
-    }
-    [[nodiscard]] const std::vector<opm::engine::ActorState>& worldActors() const { return worldActors_; }
-
-    void updateLocalState(const opm::engine::PlayerState& state)
-    {
-        if (Actor* local = localActor()) {
-            local->state = state;
-        }
-    }
-
-    [[nodiscard]] const std::vector<Actor>& actors() const { return actors_; }
-    [[nodiscard]] std::size_t size() const { return actors_.size(); }
-    [[nodiscard]] std::uint32_t lastServerTick() const { return lastServerTick_; }
-
-private:
-    std::vector<Actor> actors_;
-    std::vector<opm::engine::ActorState> worldActors_ {};
-    std::uint32_t lastServerTick_ {0};
-};
 
 struct NetworkSessionContext {
     std::unique_ptr<opm::client::net::SessionClient> session {};
@@ -494,53 +340,10 @@ enum class AppState {
     Playing,
 };
 
-enum class EditorLayer : std::uint8_t {
-    Background = 0,
-    Foliage = 1,
-    Foreground = 2,
-    Actors = 3,
-};
+using opm::client::game::EditorLayer;
+using opm::client::game::LayeredEntries;
+using opm::client::game::LevelEditor;
 
-struct LayeredEntries {
-    std::vector<opm::client::render::TileDrawEntry> background {};
-    std::vector<opm::client::render::TileDrawEntry> foliage {};
-    std::vector<opm::client::render::TileDrawEntry> foreground {};
-};
-
-struct LevelEditor {
-    opm::engine::LevelData level {};
-    LayeredEntries entries {};
-    EditorLayer activeLayer {EditorLayer::Foliage};
-    std::uint16_t selectedTile {1};
-    opm::engine::ActorScript selectedActorScript {opm::engine::ActorScript::MoveRandom};
-    bool selectedActorDiesWhenStomped {false};
-    bool selectedActorCanJumpObstacles {false};
-    bool selectedActorCanJumpRandom {false};
-    bool selectedActorCanFly {false};
-    std::uint8_t selectedActorKind {0};
-    opm::engine::ActorCategory selectedActorCategory {opm::engine::ActorCategory::Enemy};
-    char nameInput[64] {"my_level"};
-    std::string statusMessage {};
-    float cameraX {0.0F};
-    float cameraY {0.0F};
-    float zoom {1.0F};
-    bool placingSpawn {false};
-    bool placingGoal {false};
-    bool dirty {false};
-    // Edge-detect for the R hotkey (rotate tile under cursor 90 deg CW).
-    bool rotateKeyPrev {false};
-
-    // Resize controls.
-    int resizeWidth {60};
-    int resizeHeight {16};
-
-    // Middle-mouse drag panning.
-    bool middleDragActive {false};
-    double dragStartMx {0.0};
-    double dragStartMy {0.0};
-    float dragStartCameraX {0.0F};
-    float dragStartCameraY {0.0F};
-};
 
 struct GameSession {
     AppState state {AppState::MainMenu};
