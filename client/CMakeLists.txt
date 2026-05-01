@@ -3,6 +3,9 @@ add_executable(opm_client
 	src/client_app.cpp
 	src/net_client.cpp
 	src/tile_layer.cpp
+	src/sprite_config.cpp
+	src/render/sprite.cpp
+	src/render/texture_loader.cpp
 )
 
 target_include_directories(opm_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

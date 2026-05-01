@@ -1,50 +1,15 @@
 #include "net_client.hpp"
 
+#include "net/socket_compat.hpp"
 #include "opm/protocol.hpp"
 
 #include <array>
-#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
-using socket_t = SOCKET;
-using ssize_t = long long;
-static constexpr socket_t kInvalidSocket = INVALID_SOCKET;
-static inline int closesocketCompat(socket_t s) { return ::closesocket(s); }
-static inline bool sockWouldBlock() { return WSAGetLastError() == WSAEWOULDBLOCK; }
-static inline bool sockInProgress() { return WSAGetLastError() == WSAEWOULDBLOCK; }
-static inline int sockPoll(WSAPOLLFD* fds, ULONG nfds, INT timeoutMs) { return ::WSAPoll(fds, nfds, timeoutMs); }
-using pollfd_t = WSAPOLLFD;
-#else
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <netinet/tcp.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
-using socket_t = int;
-static constexpr socket_t kInvalidSocket = -1;
-static inline int closesocketCompat(socket_t s) { return ::close(s); }
-static inline bool sockWouldBlock() { return errno == EAGAIN || errno == EWOULDBLOCK; }
-static inline bool sockInProgress() { return errno == EINPROGRESS; }
-static inline int sockPoll(pollfd* fds, nfds_t nfds, int timeoutMs) { return ::poll(fds, nfds, timeoutMs); }
-using pollfd_t = pollfd;
-#endif
 
 namespace opm::client::net {
 namespace {
@@ -173,6 +138,7 @@ struct SessionClient::Impl {
     std::chrono::steady_clock::time_point lastPingSentAt {};
     bool hasPingSample {false};
     std::vector<std::vector<opm::protocol::PlayerInfo>> pendingRosters {};
+    std::vector<LevelSnapshot> pendingLevelSnapshots {};
 };
 
 SessionClient::SessionClient()
@@ -394,13 +360,15 @@ bool SessionClient::receiveLevelSnapshot(const std::uint32_t timeoutMs, LevelSna
     }
 
     const auto level = opm::protocol::decodeLevelSnapshotPayload(message.payload);
-    snapshot.width = level.groundLayer.width;
-    snapshot.height = level.groundLayer.height;
+    snapshot.width = level.foliage.width;
+    snapshot.height = level.foliage.height;
     snapshot.spawnX = level.spawnX;
     snapshot.spawnY = level.spawnY;
     snapshot.goalX = level.goalX;
     snapshot.goalY = level.goalY;
-    snapshot.tiles = level.groundLayer.tileIndices;
+    snapshot.background = level.background.tileIndices;
+    snapshot.foliage = level.foliage.tileIndices;
+    snapshot.foreground = level.foreground.tileIndices;
 
     status = "ok";
     return true;
@@ -464,6 +432,21 @@ bool SessionClient::pollStateUpdate(const std::uint32_t timeoutMs, StateUpdate& 
                 impl_->pendingRosters.push_back(opm::protocol::decodeRosterUpdatePayload(message.payload));
                 continue;
             }
+            if (message.type == opm::protocol::MessageType::LevelSnapshot) {
+                const auto level = opm::protocol::decodeLevelSnapshotPayload(message.payload);
+                LevelSnapshot snap;
+                snap.width = level.foliage.width;
+                snap.height = level.foliage.height;
+                snap.spawnX = level.spawnX;
+                snap.spawnY = level.spawnY;
+                snap.goalX = level.goalX;
+                snap.goalY = level.goalY;
+                snap.background = level.background.tileIndices;
+                snap.foliage = level.foliage.tileIndices;
+                snap.foreground = level.foreground.tileIndices;
+                impl_->pendingLevelSnapshots.push_back(std::move(snap));
+                continue;
+            }
             if (message.type == opm::protocol::MessageType::Pong) {
                 if (message.payload.size() == sizeof(std::uint64_t)) {
                     std::uint64_t echoedNs = 0;
@@ -508,19 +491,40 @@ bool SessionClient::pollStateUpdate(const std::uint32_t timeoutMs, StateUpdate& 
 
     const auto payload = opm::protocol::decodeStateUpdatePayload(message.payload);
     update.serverTick = payload.serverTick;
-    for (std::size_t i = 0; i < update.players.size(); ++i) {
-        update.players[i] = RemotePlayerState {
-            .positionX = payload.players[i].positionX,
-            .positionY = payload.players[i].positionY,
-            .velocityX = payload.players[i].velocityX,
-            .velocityY = payload.players[i].velocityY,
-            .onGround = payload.players[i].onGround,
-            .facingRight = payload.players[i].facingRight,
-            .skidding = payload.players[i].skidding,
-            .crouching = payload.players[i].crouching,
-            .pSpeedActive = payload.players[i].pSpeedActive,
-            .pSpeedMeter = payload.players[i].pSpeedMeter,
-        };
+    update.players.clear();
+    update.players.reserve(payload.players.size());
+    for (const auto& player : payload.players) {
+        update.players.push_back(RemotePlayerState {
+            .slotIndex = player.slotIndex,
+            .positionX = player.positionX,
+            .positionY = player.positionY,
+            .velocityX = player.velocityX,
+            .velocityY = player.velocityY,
+            .onGround = player.onGround,
+            .facingRight = player.facingRight,
+            .skidding = player.skidding,
+            .crouching = player.crouching,
+            .pSpeedActive = player.pSpeedActive,
+            .pSpeedMeter = player.pSpeedMeter,
+            .style = player.style,
+            .powerupTransitionFrames = player.powerupTransitionFrames,
+            .invincibilityFrames = player.invincibilityFrames,
+        });
+    }
+    update.actors.clear();
+    update.actors.reserve(payload.actors.size());
+    for (const auto& a : payload.actors) {
+        update.actors.push_back(RemoteActorState {
+            .positionX = a.positionX,
+            .positionY = a.positionY,
+            .velocityX = a.velocityX,
+            .velocityY = a.velocityY,
+            .alive = a.alive,
+            .facingRight = a.facingRight,
+            .script = a.script,
+            .enemyKind = a.enemyKind,
+            .category = a.category,
+        });
     }
 
     status = "ok";
@@ -538,6 +542,45 @@ void SessionClient::drainRosterUpdates(std::vector<std::vector<opm::protocol::Pl
     impl_->pendingRosters.clear();
 }
 
+void SessionClient::drainLevelSnapshots(std::vector<LevelSnapshot>& out)
+{
+    if (impl_ == nullptr) {
+        return;
+    }
+    out.insert(out.end(),
+        std::make_move_iterator(impl_->pendingLevelSnapshots.begin()),
+        std::make_move_iterator(impl_->pendingLevelSnapshots.end()));
+    impl_->pendingLevelSnapshots.clear();
+}
+
+bool SessionClient::requestSetLobbyLevel(const std::string& levelName,
+    std::uint32_t timeoutMs, std::string& status)
+{
+    if (impl_->fd == kInvalidSocket) {
+        status = "socket_not_connected";
+        return false;
+    }
+    if (!sendMessage(impl_->fd,
+            opm::protocol::Message {
+                .type = opm::protocol::MessageType::LobbySetLevelRequest,
+                .payload = opm::protocol::encodeLobbySetLevelRequestPayload(levelName),
+            },
+            status)) {
+        return false;
+    }
+    opm::protocol::Message response;
+    if (!awaitMessage(*impl_, opm::protocol::MessageType::LobbySetLevelResponse, timeoutMs, response, status)) {
+        return false;
+    }
+    const auto data = opm::protocol::decodeLobbySetLevelResponsePayload(response.payload);
+    if (!data.ok) {
+        status = data.reason.empty() ? "lobby_set_level_refused" : data.reason;
+        return false;
+    }
+    status = "ok";
+    return true;
+}
+
 void SessionClient::disconnect()
 {
     if (impl_ == nullptr) {
@@ -551,6 +594,7 @@ void SessionClient::disconnect()
 
     impl_->recvBuffer.clear();
     impl_->pendingRosters.clear();
+    impl_->pendingLevelSnapshots.clear();
     impl_->pingMs = 0;
     impl_->hasPingSample = false;
     impl_->lastPingSentAt = {};
@@ -570,6 +614,135 @@ bool SessionClient::isConnected() const
         return false;
     }
     return impl_->fd != kInvalidSocket;
+}
+
+bool SessionClient::awaitMessage(Impl& impl,
+    opm::protocol::MessageType expected,
+    std::uint32_t timeoutMs,
+    opm::protocol::Message& out,
+    std::string& status)
+{
+    while (true) {
+        if (tryExtractMessage(impl.recvBuffer, out)) {
+            if (out.type == opm::protocol::MessageType::RosterUpdate) {
+                impl.pendingRosters.push_back(opm::protocol::decodeRosterUpdatePayload(out.payload));
+                continue;
+            }
+            if (out.type == opm::protocol::MessageType::LevelSnapshot && expected != opm::protocol::MessageType::LevelSnapshot) {
+                const auto level = opm::protocol::decodeLevelSnapshotPayload(out.payload);
+                LevelSnapshot snap;
+                snap.width = level.foliage.width;
+                snap.height = level.foliage.height;
+                snap.spawnX = level.spawnX;
+                snap.spawnY = level.spawnY;
+                snap.goalX = level.goalX;
+                snap.goalY = level.goalY;
+                snap.background = level.background.tileIndices;
+                snap.foliage = level.foliage.tileIndices;
+                snap.foreground = level.foreground.tileIndices;
+                impl.pendingLevelSnapshots.push_back(std::move(snap));
+                continue;
+            }
+            if (out.type == opm::protocol::MessageType::Pong) {
+                continue;
+            }
+            if (out.type == expected) {
+                return true;
+            }
+            status = "unexpected_message_type";
+            return false;
+        }
+        if (!waitForFd(impl.fd, POLLIN, timeoutMs)) {
+            status = "socket_receive_timeout";
+            return false;
+        }
+        std::array<std::uint8_t, 4096> chunk {};
+        const ssize_t bytesRead = ::recv(impl.fd, reinterpret_cast<char*>(chunk.data()),
+            static_cast<int>(chunk.size()), 0);
+        if (bytesRead <= 0) {
+            status = "socket_receive_failed";
+            return false;
+        }
+        impl.recvBuffer.insert(impl.recvBuffer.end(), chunk.begin(), chunk.begin() + bytesRead);
+    }
+}
+
+bool SessionClient::requestLevelList(std::uint32_t timeoutMs, std::vector<std::string>& names, std::string& status)
+{
+    if (impl_->fd == kInvalidSocket) {
+        status = "socket_not_connected";
+        return false;
+    }
+    if (!sendMessage(impl_->fd,
+            opm::protocol::Message {.type = opm::protocol::MessageType::LevelListRequest, .payload = {}},
+            status)) {
+        return false;
+    }
+    opm::protocol::Message response;
+    if (!awaitMessage(*impl_, opm::protocol::MessageType::LevelListResponse, timeoutMs, response, status)) {
+        return false;
+    }
+    names = opm::protocol::decodeLevelListResponsePayload(response.payload);
+    status = "ok";
+    return true;
+}
+
+bool SessionClient::requestLoadLevel(const std::string& name, std::uint32_t timeoutMs,
+    opm::engine::LevelData& level, std::string& status)
+{
+    if (impl_->fd == kInvalidSocket) {
+        status = "socket_not_connected";
+        return false;
+    }
+    if (!sendMessage(impl_->fd,
+            opm::protocol::Message {
+                .type = opm::protocol::MessageType::LevelLoadRequest,
+                .payload = opm::protocol::encodeLevelLoadRequestPayload(name),
+            },
+            status)) {
+        return false;
+    }
+    opm::protocol::Message response;
+    if (!awaitMessage(*impl_, opm::protocol::MessageType::LevelLoadResponse, timeoutMs, response, status)) {
+        return false;
+    }
+    const auto data = opm::protocol::decodeLevelLoadResponsePayload(response.payload);
+    if (!data.ok) {
+        status = data.reason.empty() ? "level_load_refused" : data.reason;
+        return false;
+    }
+    level = data.level;
+    status = "ok";
+    return true;
+}
+
+bool SessionClient::requestSaveLevel(const std::string& name, const opm::engine::LevelData& level,
+    std::uint32_t timeoutMs, std::string& status)
+{
+    if (impl_->fd == kInvalidSocket) {
+        status = "socket_not_connected";
+        return false;
+    }
+    opm::protocol::LevelSaveRequestData request {.name = name, .level = level};
+    if (!sendMessage(impl_->fd,
+            opm::protocol::Message {
+                .type = opm::protocol::MessageType::LevelSaveRequest,
+                .payload = opm::protocol::encodeLevelSaveRequestPayload(request),
+            },
+            status)) {
+        return false;
+    }
+    opm::protocol::Message response;
+    if (!awaitMessage(*impl_, opm::protocol::MessageType::LevelSaveResponse, timeoutMs, response, status)) {
+        return false;
+    }
+    const auto data = opm::protocol::decodeLevelSaveResponsePayload(response.payload);
+    if (!data.ok) {
+        status = data.reason.empty() ? "level_save_refused" : data.reason;
+        return false;
+    }
+    status = "ok";
+    return true;
 }
 
 std::vector<LobbyInfo> requestLobbyList(
