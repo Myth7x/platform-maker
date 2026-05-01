@@ -9,6 +9,11 @@ add_executable(opm_client
 	src/render/render_context.cpp
 	src/render/sprite.cpp
 	src/render/texture_loader.cpp
+	src/screens/main_menu_screen.cpp
+	src/screens/level_picker_screen.cpp
+	src/screens/online_level_select_screen.cpp
+	src/screens/level_creator_screen.cpp
+	src/screens/playing_screen.cpp
 )
 
 target_include_directories(opm_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
