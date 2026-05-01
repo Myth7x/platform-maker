@@ -1,6 +1,8 @@
 #include "client_app.hpp"
 
 #include "net_client.hpp"
+#include "render/asset_registry.hpp"
+#include "render/render_context.hpp"
 #include "render/sprite.hpp"
 #include "render/texture.hpp"
 #include "render/texture_loader.hpp"
@@ -235,17 +237,12 @@ using opm::client::render::PlayerSpriteSet;
 using opm::client::render::EnemySprite;
 using opm::client::render::EnemyRegistry;
 using opm::client::render::PlayerFrameSelection;
-using opm::client::render::loadPngRgba;
-using opm::client::render::uploadTextureRgba;
-using opm::client::render::loadTextureFromPath;
-using opm::client::render::buildTileTextureMap;
-using opm::client::render::destroyTileTextures;
 using opm::client::render::drawTextureQuad;
-using opm::client::render::loadPlayerSprite;
-using opm::client::render::loadEnemySprite;
-using opm::client::render::loadEnemyRegistry;
 using opm::client::render::selectPlayerFrame;
 using opm::client::render::selectEnemyFrame;
+using opm::client::render::PaletteEntry;
+using opm::client::render::AssetRegistry;
+using opm::client::render::RenderContext;
 #endif
 
 opm::assets::AssetManifest loadAndPrintAssetSummary(const std::filesystem::path& root)
@@ -497,13 +494,6 @@ enum class AppState {
     Playing,
 };
 
-struct PaletteEntry {
-    std::uint16_t tileIndex {0};
-    std::string assetId {};
-    std::string subCategory {}; // e.g. "set1", "set2" — used for palette group headers
-    GLuint texture {0};
-};
-
 enum class EditorLayer : std::uint8_t {
     Background = 0,
     Foliage = 1,
@@ -589,10 +579,11 @@ struct GameSession {
 int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engine::LevelData& fallbackLevel,
                     const opm::client::ClientArgs& clientArgs)
 {
-    if (glfwInit() == GLFW_FALSE) {
-        std::cerr << "[client] failed to initialize GLFW\n";
+    RenderContext renderCtx(800, 600, "Open Platformer Maker");
+    if (!renderCtx.ok()) {
         return 1;
     }
+    GLFWwindow* window = renderCtx.window();
 
 #ifdef OPM_CLIENT_WITH_VULKAN
     if (glfwVulkanSupported() == GLFW_TRUE) {
@@ -607,57 +598,13 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
 #endif
 
 #ifdef OPM_CLIENT_WITH_OPENGL_STUB
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-#else
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-#endif
-
-    GLFWwindow* window = glfwCreateWindow(800, 600, "Open Platformer Maker", nullptr, nullptr);
-    if (window == nullptr) {
-        std::cerr << "[client] failed to create GLFW window\n";
-        glfwTerminate();
-        return 1;
-    }
-
-#ifdef OPM_CLIENT_WITH_OPENGL_STUB
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(1);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glEnable(GL_TEXTURE_2D);
-
-    auto textures = buildTileTextureMap(manifest);
-    std::cout << "[client] loaded tile textures: " << textures.size() << "\n";
-    const std::filesystem::path actorsRoot =
-        std::filesystem::path(OPM_CLIENT_RESOURCE_DIR) / "Actors";
-    PlayerSpriteSet playerSpriteSet;
-    playerSpriteSet.small = loadPlayerSprite(actorsRoot / "player" / "luigi" / "small");
-    playerSpriteSet.big   = loadPlayerSprite(actorsRoot / "player" / "luigi" / "big");
-    std::cout << "[client] player sprites — small: "
-              << (playerSpriteSet.small.ready ? "ready" : "missing")
-              << ", big: "
-              << (playerSpriteSet.big.ready ? "ready" : "missing")
-              << "\n";
-
-    // Two parallel visual registries: enemies and powerups. Both use the
-    // same sprite-directory scanner; the simulation routes actors to the
-    // right registry via `ActorState::category`.
-    auto enemyRegistry   = loadEnemyRegistry(actorsRoot / "enemies");
-    auto powerupRegistry = loadEnemyRegistry(actorsRoot / "powerup");
-    const auto logRegistry = [](const char* label, const EnemyRegistry& r) {
-        if (r.size() > 0) {
-            std::cout << "[client] " << label << " registry: " << r.size() << " kind(s):";
-            for (std::size_t i = 0; i < r.size(); ++i) {
-                std::cout << " [" << i << "]=" << r.names[i];
-            }
-            std::cout << "\n";
-        } else {
-            std::cout << "[client] " << label << " registry empty\n";
-        }
-    };
-    logRegistry("enemy", enemyRegistry);
-    logRegistry("powerup", powerupRegistry);
+    AssetRegistry assets;
+    assets.load(manifest, OPM_CLIENT_RESOURCE_DIR);
+    auto& textures        = assets.tileTextures;
+    auto& playerSpriteSet = assets.playerSprites;
+    auto& enemyRegistry   = assets.enemies;
+    auto& powerupRegistry = assets.powerups;
+    auto& palette         = assets.palette;
 
     auto colorForAsset = [](const std::string& assetId, float& r, float& g, float& b) {
         const auto h = static_cast<unsigned long long>(std::hash<std::string> {}(assetId));
@@ -665,44 +612,6 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
         g = 0.2F + static_cast<float>((h >> 8U) & 0xFFU) / 510.0F;
         b = 0.2F + static_cast<float>((h >> 16U) & 0xFFU) / 510.0F;
     };
-#endif
-
-#ifdef OPM_CLIENT_HAS_IMGUI
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    (void)io;
-    ImGui::StyleColorsDark();
-    ImGui_ImplGlfw_InitForOpenGL(window, true);
-    ImGui_ImplOpenGL2_Init();
-#endif
-
-    // Build the tile palette: maps tile index (1..N) to its texture handle.
-    std::vector<PaletteEntry> palette;
-#ifdef OPM_CLIENT_WITH_OPENGL_STUB
-    {
-        for (const auto& record : manifest.records) {
-            if (record.category != "Tiles") {
-                continue;
-            }
-            constexpr std::string_view prefix = "Tiles:";
-            if (!record.id.starts_with(prefix)) {
-                continue;
-            }
-            std::uint16_t tileIndex = 0;
-            const auto raw = record.id.substr(prefix.size());
-            const auto result = std::from_chars(raw.data(), raw.data() + raw.size(), tileIndex);
-            if (result.ec != std::errc {}) {
-                continue;
-            }
-            const auto it = textures.find(record.id);
-            const GLuint handle = (it != textures.end()) ? it->second : 0U;
-            palette.push_back(PaletteEntry {.tileIndex = tileIndex, .assetId = record.id, .subCategory = record.subCategory, .texture = handle});
-        }
-        std::sort(palette.begin(), palette.end(),
-            [](const PaletteEntry& a, const PaletteEntry& b) { return a.tileIndex < b.tileIndex; });
-        std::cout << "[client] palette entries: " << palette.size() << "\n";
-    }
 #endif
 
     GameSession session {};
@@ -2461,48 +2370,8 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
         glfwSwapBuffers(window);
     }
 
-#ifdef OPM_CLIENT_HAS_IMGUI
-    ImGui_ImplOpenGL2_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
-#endif
-
-#ifdef OPM_CLIENT_WITH_OPENGL_STUB
-    const auto deleteTextures = [](std::vector<Texture2D>& list) {
-        for (auto& t : list) {
-            if (t.handle != 0) {
-                glDeleteTextures(1, &t.handle);
-                t.handle = 0;
-            }
-        }
-    };
-    const auto deleteClip = [&](AnimClip& clip) {
-        deleteTextures(clip.framesRight);
-        deleteTextures(clip.framesLeft);
-    };
-    const auto deletePlayerSprite = [&](PlayerSprite& ps) {
-        deleteClip(ps.idle);
-        deleteClip(ps.crouch);
-        deleteClip(ps.walkNormal);
-        deleteClip(ps.walkNormalTurnaround);
-        deleteClip(ps.airNormal);
-        deleteClip(ps.walkPSpeed);
-        deleteClip(ps.walkPSpeedTurnaround);
-        deleteClip(ps.airPSpeed);
-    };
-    deletePlayerSprite(playerSpriteSet.small);
-    deletePlayerSprite(playerSpriteSet.big);
-    for (auto& es : enemyRegistry.sprites) {
-        deleteTextures(es.frames);
-    }
-    for (auto& es : powerupRegistry.sprites) {
-        deleteTextures(es.frames);
-    }
-    destroyTileTextures(textures);
-#endif
-
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    // RenderContext + AssetRegistry destructors release ImGui, GL textures,
+    // window, and GLFW in the right order.
     return 0;
 }
 #endif
