@@ -1,10 +1,11 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <string>
-#include <array>
 #include <vector>
 
+#include "net/socket_compat.hpp"
 #include "opm/engine.hpp"
 #include "opm/protocol.hpp"
 
@@ -18,7 +19,7 @@ struct LobbyInfo {
 
 struct JoinResult {
     bool accepted {false};
-    std::uint8_t playerIndex {0xFFU};
+    std::uint16_t playerIndex {0xFFFFU};
     std::uint32_t tickRateHz {0};
     std::string lobbyName {};
     std::string reason {};
@@ -32,10 +33,16 @@ struct LevelSnapshot {
     float spawnY {0.0F};
     float goalX {0.0F};
     float goalY {0.0F};
-    std::vector<std::uint16_t> tiles {};
+    std::vector<std::uint16_t> background {};
+    std::vector<std::uint16_t> foliage {};
+    std::vector<std::uint16_t> foreground {};
 };
 
 struct RemotePlayerState {
+    // Server-side simulation slot this state belongs to. The wire format
+    // is sparse — only active slots are sent — so use this rather than the
+    // index in StateUpdate::players when matching states to local Actors.
+    std::uint16_t slotIndex {0};
     float positionX {0.0F};
     float positionY {0.0F};
     float velocityX {0.0F};
@@ -46,11 +53,27 @@ struct RemotePlayerState {
     bool crouching {false};
     bool pSpeedActive {false};
     float pSpeedMeter {0.0F};
+    std::uint8_t style {0};
+    std::uint8_t powerupTransitionFrames {0};
+    std::uint8_t invincibilityFrames {0};
+};
+
+struct RemoteActorState {
+    float positionX {0.0F};
+    float positionY {0.0F};
+    float velocityX {0.0F};
+    float velocityY {0.0F};
+    bool alive {true};
+    bool facingRight {true};
+    std::uint8_t script {0};
+    std::uint8_t enemyKind {0};
+    std::uint8_t category {0};
 };
 
 struct StateUpdate {
     std::uint32_t serverTick {0};
-    std::array<RemotePlayerState, 2> players {};
+    std::vector<RemotePlayerState> players {};
+    std::vector<RemoteActorState> actors {};
 };
 
 class SessionClient {
@@ -70,13 +93,46 @@ public:
     void drainRosterUpdates(std::vector<std::vector<opm::protocol::PlayerInfo>>& out);
     // Sends a Ping if `intervalMs` has elapsed since the last one. Cheap; safe to call every frame.
     void sendPingIfDue(std::uint32_t intervalMs);
+
+    // Level catalogue / persistence (request-reply against the server).
+    [[nodiscard]] bool requestLevelList(std::uint32_t timeoutMs, std::vector<std::string>& names, std::string& status);
+    [[nodiscard]] bool requestLoadLevel(const std::string& name, std::uint32_t timeoutMs,
+        opm::engine::LevelData& level, std::string& status);
+    [[nodiscard]] bool requestSaveLevel(const std::string& name, const opm::engine::LevelData& level,
+        std::uint32_t timeoutMs, std::string& status);
+
+    // Asks the server to switch the lobby simulation to a stored level.
+    // Returns true when the server accepted the change. The new level data is
+    // delivered separately as a LevelSnapshot broadcast — drain it via
+    // drainLevelSnapshots() to receive it.
+    [[nodiscard]] bool requestSetLobbyLevel(const std::string& levelName,
+        std::uint32_t timeoutMs, std::string& status);
+
+    // Returns and clears any LevelSnapshot messages received since the last
+    // call (during gameplay polls).
+    void drainLevelSnapshots(std::vector<LevelSnapshot>& out);
     [[nodiscard]] std::uint32_t getPingMs() const;
     [[nodiscard]] bool isConnected() const;
     void disconnect();
 
 private:
-    struct Impl;
-    Impl* impl_;
+    // Reads up to one chunk into recvBuffer_, blocking until either data
+    // arrives, the timeout expires, or the peer closes. Returns false (and
+    // sets `status`) on timeout / closed peer / receive error.
+    [[nodiscard]] bool pumpRecv(std::uint32_t timeoutMs, std::string& status);
+
+    [[nodiscard]] bool awaitMessage(opm::protocol::MessageType expected,
+        std::uint32_t timeoutMs,
+        opm::protocol::Message& out,
+        std::string& status);
+
+    socket_t fd_ {kInvalidSocket};
+    std::vector<std::uint8_t> recvBuffer_ {};
+    std::uint32_t pingMs_ {0};
+    std::chrono::steady_clock::time_point lastPingSentAt_ {};
+    bool hasPingSample_ {false};
+    std::vector<std::vector<opm::protocol::PlayerInfo>> pendingRosters_ {};
+    std::vector<LevelSnapshot> pendingLevelSnapshots_ {};
 };
 
 [[nodiscard]] std::vector<LobbyInfo> requestLobbyList(

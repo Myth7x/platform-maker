@@ -15,6 +15,7 @@ namespace opm::client::net {
 namespace {
 
 constexpr std::size_t kProtocolHeaderSize = 9U;
+constexpr std::size_t kRecvChunkSize = 4096U;
 
 #ifdef _WIN32
 struct WsaInitGuard {
@@ -52,11 +53,11 @@ bool setNonBlocking(const socket_t fd)
     u_long mode = 1;
     return ::ioctlsocket(fd, FIONBIO, &mode) == 0;
 #else
-    const int flags = fcntl(fd, F_GETFL, 0);
+    const int flags = ::fcntl(fd, F_GETFL, 0);
     if (flags < 0) {
         return false;
     }
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+    return ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
 #endif
 }
 
@@ -129,20 +130,24 @@ bool tryExtractMessage(std::vector<std::uint8_t>& buffer, opm::protocol::Message
     return true;
 }
 
+LevelSnapshot levelDataToSnapshot(const opm::engine::LevelData& level)
+{
+    LevelSnapshot snap;
+    snap.width = level.foliage.width;
+    snap.height = level.foliage.height;
+    snap.spawnX = level.spawnX;
+    snap.spawnY = level.spawnY;
+    snap.goalX = level.goalX;
+    snap.goalY = level.goalY;
+    snap.background = level.background.tileIndices;
+    snap.foliage = level.foliage.tileIndices;
+    snap.foreground = level.foreground.tileIndices;
+    return snap;
+}
+
 } // namespace
 
-struct SessionClient::Impl {
-    socket_t fd {kInvalidSocket};
-    std::vector<std::uint8_t> recvBuffer {};
-    std::uint32_t pingMs {0};
-    std::chrono::steady_clock::time_point lastPingSentAt {};
-    bool hasPingSample {false};
-    std::vector<std::vector<opm::protocol::PlayerInfo>> pendingRosters {};
-    std::vector<LevelSnapshot> pendingLevelSnapshots {};
-};
-
 SessionClient::SessionClient()
-    : impl_(new Impl {})
 {
 #ifdef _WIN32
     (void)wsaGuard();
@@ -152,8 +157,24 @@ SessionClient::SessionClient()
 SessionClient::~SessionClient()
 {
     disconnect();
-    delete impl_;
-    impl_ = nullptr;
+}
+
+bool SessionClient::pumpRecv(const std::uint32_t timeoutMs, std::string& status)
+{
+    if (!waitForFd(fd_, POLLIN, timeoutMs)) {
+        status = "socket_receive_timeout";
+        return false;
+    }
+
+    std::array<std::uint8_t, kRecvChunkSize> chunk {};
+    const ssize_t bytesRead = ::recv(fd_, reinterpret_cast<char*>(chunk.data()),
+        static_cast<int>(chunk.size()), 0);
+    if (bytesRead <= 0) {
+        status = "socket_receive_failed";
+        return false;
+    }
+    recvBuffer_.insert(recvBuffer_.end(), chunk.begin(), chunk.begin() + bytesRead);
+    return true;
 }
 
 bool SessionClient::connect(const std::string& host, const std::uint16_t port, const std::uint32_t timeoutMs, std::string& status)
@@ -218,41 +239,28 @@ bool SessionClient::connect(const std::string& host, const std::uint16_t port, c
 
     freeaddrinfo(result);
 
-    impl_->fd = fd;
-    impl_->recvBuffer.clear();
+    fd_ = fd;
+    recvBuffer_.clear();
     status = "ok";
     return true;
 }
 
 bool SessionClient::requestLobbyList(const std::uint32_t timeoutMs, std::vector<LobbyInfo>& lobbies, std::string& status)
 {
-    if (impl_->fd == kInvalidSocket) {
+    if (fd_ == kInvalidSocket) {
         status = "socket_not_connected";
         return false;
     }
 
-    if (!sendMessage(impl_->fd, opm::protocol::Message {.type = opm::protocol::MessageType::LobbyListRequest, .payload = {}}, status)) {
+    if (!sendMessage(fd_, opm::protocol::Message {.type = opm::protocol::MessageType::LobbyListRequest, .payload = {}}, status)) {
         return false;
     }
 
     opm::protocol::Message response;
-    while (true) {
-        if (tryExtractMessage(impl_->recvBuffer, response)) {
-            break;
-        }
-
-        if (!waitForFd(impl_->fd, POLLIN, timeoutMs)) {
-            status = "socket_receive_timeout";
+    while (!tryExtractMessage(recvBuffer_, response)) {
+        if (!pumpRecv(timeoutMs, status)) {
             return false;
         }
-
-        std::array<std::uint8_t, 4096> chunk {};
-        const ssize_t bytesRead = ::recv(impl_->fd, reinterpret_cast<char*>(chunk.data()), static_cast<int>(chunk.size()), 0);
-        if (bytesRead <= 0) {
-            status = "socket_receive_failed";
-            return false;
-        }
-        impl_->recvBuffer.insert(impl_->recvBuffer.end(), chunk.begin(), chunk.begin() + bytesRead);
     }
 
     if (response.type != opm::protocol::MessageType::LobbyListResponse) {
@@ -273,13 +281,13 @@ bool SessionClient::requestLobbyList(const std::uint32_t timeoutMs, std::vector<
 
 bool SessionClient::joinLobby(const std::string& lobbyName, const std::uint32_t timeoutMs, JoinResult& result, std::string& status)
 {
-    if (impl_->fd == kInvalidSocket) {
+    if (fd_ == kInvalidSocket) {
         status = "socket_not_connected";
         return false;
     }
 
     if (!sendMessage(
-            impl_->fd,
+            fd_,
             opm::protocol::Message {
                 .type = opm::protocol::MessageType::LobbyJoinRequest,
                 .payload = opm::protocol::encodeLobbyJoinRequestPayload(lobbyName),
@@ -289,23 +297,10 @@ bool SessionClient::joinLobby(const std::string& lobbyName, const std::uint32_t 
     }
 
     opm::protocol::Message response;
-    while (true) {
-        if (tryExtractMessage(impl_->recvBuffer, response)) {
-            break;
-        }
-
-        if (!waitForFd(impl_->fd, POLLIN, timeoutMs)) {
-            status = "socket_receive_timeout";
+    while (!tryExtractMessage(recvBuffer_, response)) {
+        if (!pumpRecv(timeoutMs, status)) {
             return false;
         }
-
-        std::array<std::uint8_t, 4096> chunk {};
-        const ssize_t bytesRead = ::recv(impl_->fd, reinterpret_cast<char*>(chunk.data()), static_cast<int>(chunk.size()), 0);
-        if (bytesRead <= 0) {
-            status = "socket_receive_failed";
-            return false;
-        }
-        impl_->recvBuffer.insert(impl_->recvBuffer.end(), chunk.begin(), chunk.begin() + bytesRead);
     }
 
     if (response.type != opm::protocol::MessageType::LobbyJoinResponse) {
@@ -329,29 +324,16 @@ bool SessionClient::joinLobby(const std::string& lobbyName, const std::uint32_t 
 
 bool SessionClient::receiveLevelSnapshot(const std::uint32_t timeoutMs, LevelSnapshot& snapshot, std::string& status)
 {
-    if (impl_->fd == kInvalidSocket) {
+    if (fd_ == kInvalidSocket) {
         status = "socket_not_connected";
         return false;
     }
 
     opm::protocol::Message message;
-    while (true) {
-        if (tryExtractMessage(impl_->recvBuffer, message)) {
-            break;
-        }
-
-        if (!waitForFd(impl_->fd, POLLIN, timeoutMs)) {
-            status = "socket_receive_timeout";
+    while (!tryExtractMessage(recvBuffer_, message)) {
+        if (!pumpRecv(timeoutMs, status)) {
             return false;
         }
-
-        std::array<std::uint8_t, 4096> chunk {};
-        const ssize_t bytesRead = ::recv(impl_->fd, reinterpret_cast<char*>(chunk.data()), static_cast<int>(chunk.size()), 0);
-        if (bytesRead <= 0) {
-            status = "socket_receive_failed";
-            return false;
-        }
-        impl_->recvBuffer.insert(impl_->recvBuffer.end(), chunk.begin(), chunk.begin() + bytesRead);
     }
 
     if (message.type != opm::protocol::MessageType::LevelSnapshot) {
@@ -359,30 +341,20 @@ bool SessionClient::receiveLevelSnapshot(const std::uint32_t timeoutMs, LevelSna
         return false;
     }
 
-    const auto level = opm::protocol::decodeLevelSnapshotPayload(message.payload);
-    snapshot.width = level.foliage.width;
-    snapshot.height = level.foliage.height;
-    snapshot.spawnX = level.spawnX;
-    snapshot.spawnY = level.spawnY;
-    snapshot.goalX = level.goalX;
-    snapshot.goalY = level.goalY;
-    snapshot.background = level.background.tileIndices;
-    snapshot.foliage = level.foliage.tileIndices;
-    snapshot.foreground = level.foreground.tileIndices;
-
+    snapshot = levelDataToSnapshot(opm::protocol::decodeLevelSnapshotPayload(message.payload));
     status = "ok";
     return true;
 }
 
 bool SessionClient::sendMovementInput(const opm::engine::InputFrame& input, std::string& status)
 {
-    if (impl_->fd == kInvalidSocket) {
+    if (fd_ == kInvalidSocket) {
         status = "socket_not_connected";
         return false;
     }
 
     return sendMessage(
-        impl_->fd,
+        fd_,
         opm::protocol::Message {
             .type = opm::protocol::MessageType::MovementInput,
             .payload = opm::protocol::encodeMovementInputPayload(input),
@@ -392,17 +364,17 @@ bool SessionClient::sendMovementInput(const opm::engine::InputFrame& input, std:
 
 void SessionClient::sendPingIfDue(const std::uint32_t intervalMs)
 {
-    if (impl_ == nullptr || impl_->fd == kInvalidSocket) {
+    if (fd_ == kInvalidSocket) {
         return;
     }
     const auto now = std::chrono::steady_clock::now();
-    if (impl_->lastPingSentAt.time_since_epoch().count() != 0) {
-        const auto sinceLast = std::chrono::duration_cast<std::chrono::milliseconds>(now - impl_->lastPingSentAt).count();
+    if (lastPingSentAt_.time_since_epoch().count() != 0) {
+        const auto sinceLast = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastPingSentAt_).count();
         if (sinceLast < static_cast<std::int64_t>(intervalMs)) {
             return;
         }
     }
-    impl_->lastPingSentAt = now;
+    lastPingSentAt_ = now;
 
     const auto nowNs = static_cast<std::uint64_t>(now.time_since_epoch().count());
     std::vector<std::uint8_t> payload(sizeof(nowNs));
@@ -410,7 +382,7 @@ void SessionClient::sendPingIfDue(const std::uint32_t intervalMs)
 
     std::string ignoredStatus;
     (void)sendMessage(
-        impl_->fd,
+        fd_,
         opm::protocol::Message {
             .type = opm::protocol::MessageType::Ping,
             .payload = std::move(payload),
@@ -420,31 +392,21 @@ void SessionClient::sendPingIfDue(const std::uint32_t intervalMs)
 
 bool SessionClient::pollStateUpdate(const std::uint32_t timeoutMs, StateUpdate& update, std::string& status)
 {
-    if (impl_->fd == kInvalidSocket) {
+    if (fd_ == kInvalidSocket) {
         status = "socket_not_connected";
         return false;
     }
 
     opm::protocol::Message message;
     while (true) {
-        if (tryExtractMessage(impl_->recvBuffer, message)) {
+        if (tryExtractMessage(recvBuffer_, message)) {
             if (message.type == opm::protocol::MessageType::RosterUpdate) {
-                impl_->pendingRosters.push_back(opm::protocol::decodeRosterUpdatePayload(message.payload));
+                pendingRosters_.push_back(opm::protocol::decodeRosterUpdatePayload(message.payload));
                 continue;
             }
             if (message.type == opm::protocol::MessageType::LevelSnapshot) {
-                const auto level = opm::protocol::decodeLevelSnapshotPayload(message.payload);
-                LevelSnapshot snap;
-                snap.width = level.foliage.width;
-                snap.height = level.foliage.height;
-                snap.spawnX = level.spawnX;
-                snap.spawnY = level.spawnY;
-                snap.goalX = level.goalX;
-                snap.goalY = level.goalY;
-                snap.background = level.background.tileIndices;
-                snap.foliage = level.foliage.tileIndices;
-                snap.foreground = level.foreground.tileIndices;
-                impl_->pendingLevelSnapshots.push_back(std::move(snap));
+                pendingLevelSnapshots_.push_back(
+                    levelDataToSnapshot(opm::protocol::decodeLevelSnapshotPayload(message.payload)));
                 continue;
             }
             if (message.type == opm::protocol::MessageType::Pong) {
@@ -455,13 +417,13 @@ bool SessionClient::pollStateUpdate(const std::uint32_t timeoutMs, StateUpdate& 
                     const auto rtt = std::chrono::steady_clock::now() - sentAt;
                     const auto rttMs = std::chrono::duration_cast<std::chrono::milliseconds>(rtt).count();
                     if (rttMs >= 0 && rttMs < 60000) {
-                        if (!impl_->hasPingSample) {
-                            impl_->pingMs = static_cast<std::uint32_t>(rttMs);
-                            impl_->hasPingSample = true;
+                        if (!hasPingSample_) {
+                            pingMs_ = static_cast<std::uint32_t>(rttMs);
+                            hasPingSample_ = true;
                         } else {
                             // Exponential moving average to smooth jitter.
-                            impl_->pingMs = static_cast<std::uint32_t>(
-                                (impl_->pingMs * 3 + static_cast<std::uint32_t>(rttMs)) / 4);
+                            pingMs_ = static_cast<std::uint32_t>(
+                                (pingMs_ * 3 + static_cast<std::uint32_t>(rttMs)) / 4);
                         }
                     }
                 }
@@ -470,18 +432,9 @@ bool SessionClient::pollStateUpdate(const std::uint32_t timeoutMs, StateUpdate& 
             break;
         }
 
-        if (!waitForFd(impl_->fd, POLLIN, timeoutMs)) {
-            status = "socket_receive_timeout";
+        if (!pumpRecv(timeoutMs, status)) {
             return false;
         }
-
-        std::array<std::uint8_t, 4096> chunk {};
-        const ssize_t bytesRead = ::recv(impl_->fd, reinterpret_cast<char*>(chunk.data()), static_cast<int>(chunk.size()), 0);
-        if (bytesRead <= 0) {
-            status = "socket_receive_failed";
-            return false;
-        }
-        impl_->recvBuffer.insert(impl_->recvBuffer.end(), chunk.begin(), chunk.begin() + bytesRead);
     }
 
     if (message.type != opm::protocol::MessageType::StateUpdate) {
@@ -533,34 +486,28 @@ bool SessionClient::pollStateUpdate(const std::uint32_t timeoutMs, StateUpdate& 
 
 void SessionClient::drainRosterUpdates(std::vector<std::vector<opm::protocol::PlayerInfo>>& out)
 {
-    if (impl_ == nullptr) {
-        return;
-    }
     out.insert(out.end(),
-        std::make_move_iterator(impl_->pendingRosters.begin()),
-        std::make_move_iterator(impl_->pendingRosters.end()));
-    impl_->pendingRosters.clear();
+        std::make_move_iterator(pendingRosters_.begin()),
+        std::make_move_iterator(pendingRosters_.end()));
+    pendingRosters_.clear();
 }
 
 void SessionClient::drainLevelSnapshots(std::vector<LevelSnapshot>& out)
 {
-    if (impl_ == nullptr) {
-        return;
-    }
     out.insert(out.end(),
-        std::make_move_iterator(impl_->pendingLevelSnapshots.begin()),
-        std::make_move_iterator(impl_->pendingLevelSnapshots.end()));
-    impl_->pendingLevelSnapshots.clear();
+        std::make_move_iterator(pendingLevelSnapshots_.begin()),
+        std::make_move_iterator(pendingLevelSnapshots_.end()));
+    pendingLevelSnapshots_.clear();
 }
 
 bool SessionClient::requestSetLobbyLevel(const std::string& levelName,
     std::uint32_t timeoutMs, std::string& status)
 {
-    if (impl_->fd == kInvalidSocket) {
+    if (fd_ == kInvalidSocket) {
         status = "socket_not_connected";
         return false;
     }
-    if (!sendMessage(impl_->fd,
+    if (!sendMessage(fd_,
             opm::protocol::Message {
                 .type = opm::protocol::MessageType::LobbySetLevelRequest,
                 .payload = opm::protocol::encodeLobbySetLevelRequestPayload(levelName),
@@ -569,7 +516,7 @@ bool SessionClient::requestSetLobbyLevel(const std::string& levelName,
         return false;
     }
     opm::protocol::Message response;
-    if (!awaitMessage(*impl_, opm::protocol::MessageType::LobbySetLevelResponse, timeoutMs, response, status)) {
+    if (!awaitMessage(opm::protocol::MessageType::LobbySetLevelResponse, timeoutMs, response, status)) {
         return false;
     }
     const auto data = opm::protocol::decodeLobbySetLevelResponsePayload(response.payload);
@@ -583,64 +530,46 @@ bool SessionClient::requestSetLobbyLevel(const std::string& levelName,
 
 void SessionClient::disconnect()
 {
-    if (impl_ == nullptr) {
-        return;
+    if (fd_ != kInvalidSocket) {
+        closesocketCompat(fd_);
+        fd_ = kInvalidSocket;
     }
 
-    if (impl_->fd != kInvalidSocket) {
-        closesocketCompat(impl_->fd);
-        impl_->fd = kInvalidSocket;
-    }
-
-    impl_->recvBuffer.clear();
-    impl_->pendingRosters.clear();
-    impl_->pendingLevelSnapshots.clear();
-    impl_->pingMs = 0;
-    impl_->hasPingSample = false;
-    impl_->lastPingSentAt = {};
+    recvBuffer_.clear();
+    pendingRosters_.clear();
+    pendingLevelSnapshots_.clear();
+    pingMs_ = 0;
+    hasPingSample_ = false;
+    lastPingSentAt_ = {};
 }
 
 std::uint32_t SessionClient::getPingMs() const
 {
-    if (impl_ == nullptr || impl_->fd == kInvalidSocket) {
+    if (fd_ == kInvalidSocket) {
         return 0;
     }
-    return impl_->pingMs;
+    return pingMs_;
 }
 
 bool SessionClient::isConnected() const
 {
-    if (impl_ == nullptr) {
-        return false;
-    }
-    return impl_->fd != kInvalidSocket;
+    return fd_ != kInvalidSocket;
 }
 
-bool SessionClient::awaitMessage(Impl& impl,
-    opm::protocol::MessageType expected,
+bool SessionClient::awaitMessage(opm::protocol::MessageType expected,
     std::uint32_t timeoutMs,
     opm::protocol::Message& out,
     std::string& status)
 {
     while (true) {
-        if (tryExtractMessage(impl.recvBuffer, out)) {
+        if (tryExtractMessage(recvBuffer_, out)) {
             if (out.type == opm::protocol::MessageType::RosterUpdate) {
-                impl.pendingRosters.push_back(opm::protocol::decodeRosterUpdatePayload(out.payload));
+                pendingRosters_.push_back(opm::protocol::decodeRosterUpdatePayload(out.payload));
                 continue;
             }
             if (out.type == opm::protocol::MessageType::LevelSnapshot && expected != opm::protocol::MessageType::LevelSnapshot) {
-                const auto level = opm::protocol::decodeLevelSnapshotPayload(out.payload);
-                LevelSnapshot snap;
-                snap.width = level.foliage.width;
-                snap.height = level.foliage.height;
-                snap.spawnX = level.spawnX;
-                snap.spawnY = level.spawnY;
-                snap.goalX = level.goalX;
-                snap.goalY = level.goalY;
-                snap.background = level.background.tileIndices;
-                snap.foliage = level.foliage.tileIndices;
-                snap.foreground = level.foreground.tileIndices;
-                impl.pendingLevelSnapshots.push_back(std::move(snap));
+                pendingLevelSnapshots_.push_back(
+                    levelDataToSnapshot(opm::protocol::decodeLevelSnapshotPayload(out.payload)));
                 continue;
             }
             if (out.type == opm::protocol::MessageType::Pong) {
@@ -652,34 +581,25 @@ bool SessionClient::awaitMessage(Impl& impl,
             status = "unexpected_message_type";
             return false;
         }
-        if (!waitForFd(impl.fd, POLLIN, timeoutMs)) {
-            status = "socket_receive_timeout";
+        if (!pumpRecv(timeoutMs, status)) {
             return false;
         }
-        std::array<std::uint8_t, 4096> chunk {};
-        const ssize_t bytesRead = ::recv(impl.fd, reinterpret_cast<char*>(chunk.data()),
-            static_cast<int>(chunk.size()), 0);
-        if (bytesRead <= 0) {
-            status = "socket_receive_failed";
-            return false;
-        }
-        impl.recvBuffer.insert(impl.recvBuffer.end(), chunk.begin(), chunk.begin() + bytesRead);
     }
 }
 
 bool SessionClient::requestLevelList(std::uint32_t timeoutMs, std::vector<std::string>& names, std::string& status)
 {
-    if (impl_->fd == kInvalidSocket) {
+    if (fd_ == kInvalidSocket) {
         status = "socket_not_connected";
         return false;
     }
-    if (!sendMessage(impl_->fd,
+    if (!sendMessage(fd_,
             opm::protocol::Message {.type = opm::protocol::MessageType::LevelListRequest, .payload = {}},
             status)) {
         return false;
     }
     opm::protocol::Message response;
-    if (!awaitMessage(*impl_, opm::protocol::MessageType::LevelListResponse, timeoutMs, response, status)) {
+    if (!awaitMessage(opm::protocol::MessageType::LevelListResponse, timeoutMs, response, status)) {
         return false;
     }
     names = opm::protocol::decodeLevelListResponsePayload(response.payload);
@@ -690,11 +610,11 @@ bool SessionClient::requestLevelList(std::uint32_t timeoutMs, std::vector<std::s
 bool SessionClient::requestLoadLevel(const std::string& name, std::uint32_t timeoutMs,
     opm::engine::LevelData& level, std::string& status)
 {
-    if (impl_->fd == kInvalidSocket) {
+    if (fd_ == kInvalidSocket) {
         status = "socket_not_connected";
         return false;
     }
-    if (!sendMessage(impl_->fd,
+    if (!sendMessage(fd_,
             opm::protocol::Message {
                 .type = opm::protocol::MessageType::LevelLoadRequest,
                 .payload = opm::protocol::encodeLevelLoadRequestPayload(name),
@@ -703,7 +623,7 @@ bool SessionClient::requestLoadLevel(const std::string& name, std::uint32_t time
         return false;
     }
     opm::protocol::Message response;
-    if (!awaitMessage(*impl_, opm::protocol::MessageType::LevelLoadResponse, timeoutMs, response, status)) {
+    if (!awaitMessage(opm::protocol::MessageType::LevelLoadResponse, timeoutMs, response, status)) {
         return false;
     }
     const auto data = opm::protocol::decodeLevelLoadResponsePayload(response.payload);
@@ -719,12 +639,12 @@ bool SessionClient::requestLoadLevel(const std::string& name, std::uint32_t time
 bool SessionClient::requestSaveLevel(const std::string& name, const opm::engine::LevelData& level,
     std::uint32_t timeoutMs, std::string& status)
 {
-    if (impl_->fd == kInvalidSocket) {
+    if (fd_ == kInvalidSocket) {
         status = "socket_not_connected";
         return false;
     }
     opm::protocol::LevelSaveRequestData request {.name = name, .level = level};
-    if (!sendMessage(impl_->fd,
+    if (!sendMessage(fd_,
             opm::protocol::Message {
                 .type = opm::protocol::MessageType::LevelSaveRequest,
                 .payload = opm::protocol::encodeLevelSaveRequestPayload(request),
@@ -733,7 +653,7 @@ bool SessionClient::requestSaveLevel(const std::string& name, const opm::engine:
         return false;
     }
     opm::protocol::Message response;
-    if (!awaitMessage(*impl_, opm::protocol::MessageType::LevelSaveResponse, timeoutMs, response, status)) {
+    if (!awaitMessage(opm::protocol::MessageType::LevelSaveResponse, timeoutMs, response, status)) {
         return false;
     }
     const auto data = opm::protocol::decodeLevelSaveResponsePayload(response.payload);
