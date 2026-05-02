@@ -37,6 +37,8 @@ struct ScreenContext {
     render::RenderContext& render;
     render::AssetRegistry& assets;
     net::SessionClient*    session;
+    int                    framebufferWidth {0};
+    int                    framebufferHeight {0};
 };
 
 // Base interface for one of the five top-level UI screens
