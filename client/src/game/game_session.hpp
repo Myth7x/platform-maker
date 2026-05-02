@@ -13,6 +13,7 @@ namespace opm::client::game {
 
 enum class AppState : std::uint8_t {
     MainMenu,
+    LobbyBrowser,
     LevelPicker,
     OnlineLevelSelect,
     LevelCreator,
@@ -32,15 +33,24 @@ struct GameSession {
     char addressInput[64] {"127.0.0.1:34900"};
     std::string menuStatus;
 
+    // LobbyBrowser state.
+    struct LobbyEntry {
+        std::string name {};
+        std::uint32_t players {0};
+        std::uint32_t capacity {0};
+    };
+    std::vector<LobbyEntry> availableLobbies {};
+    int selectedLobbyIndex {-1};
+    std::string lobbyBrowserStatus {};
+
     // LevelPicker state.
     std::vector<std::string> serverLevels {};
     std::string pickerStatus {};
     int selectedLevelIndex {-1};
     enum class PickerIntent : std::uint8_t {
-        PlayOffline = 0,
-        EditOnServer = 1,
+        EditOnServer = 0,
     };
-    PickerIntent pickerIntent {PickerIntent::PlayOffline};
+    PickerIntent pickerIntent {PickerIntent::EditOnServer};
 
     // OnlineLevelSelect state (after a multiplayer lobby join, before play).
     std::vector<std::string> onlineLevels {};

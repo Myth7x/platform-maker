@@ -5,7 +5,6 @@
 
 #include "opm/level.hpp"
 
-#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -13,23 +12,19 @@ namespace opm::client::net { class SessionClient; }
 
 namespace opm::client {
 
-// Browses levels stored on the server. Lets the user pick one to play
-// or to load into the editor (intent comes from GameSession::pickerIntent
-// — set by whichever menu button got us here).
+// "Level Studio": browse server-stored levels and either edit one or
+// create a new blank level. Replaces the dual-purpose picker that used
+// to also serve offline play (offline mode removed).
 class LevelPickerScreen final : public Screen {
 public:
     struct Callbacks {
-        // Called after a successful Load when the picker intent is
-        // EditOnServer. The screen will not have touched gNetwork beyond
-        // the load itself.
+        // Open the editor on a freshly loaded level. Implementation
+        // typically calls editLoadedLevel(loaded, name).
         std::function<void(opm::engine::LevelData loaded, const std::string& name)>
             onEditLoadedLevel;
 
-        // Called after a successful Load when the picker intent is
-        // PlayOffline. Implementation should clear the connection +
-        // local player index and call enterPlaying(false, loaded).
-        std::function<void(opm::engine::LevelData loaded)>
-            onPlayLoadedLevelOffline;
+        // Open the editor with a blank canvas (Create New Level button).
+        std::function<void()> onCreateNewLevel;
     };
 
     LevelPickerScreen(opm::client::game::GameSession& session, Callbacks callbacks);

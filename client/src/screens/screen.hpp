@@ -15,6 +15,7 @@ namespace game   { class ActorManager; struct LevelEditor; struct NetworkSession
 
 enum class ScreenId : std::uint8_t {
     MainMenu,
+    LobbyBrowser,
     LevelPicker,
     OnlineLevelSelect,
     LevelCreator,

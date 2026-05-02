@@ -21,25 +21,17 @@ namespace opm::client {
 class MainMenuScreen final : public Screen {
 public:
     struct Callbacks {
-        // Connect to host:port and open the level picker. Returns error
-        // message (empty on success). Caller threads the picker intent
-        // through (PlayOffline vs EditOnServer).
-        std::function<std::string(const std::string& host,
-                                  std::uint16_t port,
-                                  opm::client::game::GameSession::PickerIntent)>
-            onEnterLevelPicker;
-
-        // Quick-play the built-in fallback level offline.
-        std::function<void()> onPlayQuickOffline;
-
-        // Run the multiplayer lobby join flow + level-list fetch + state
-        // transition to OnlineLevelSelect. Returns error message (empty
-        // on success).
+        // Open the lobby browser (connect to server + fetch lobby list,
+        // then transition to LobbyBrowser screen). Returns error
+        // message (empty on success).
         std::function<std::string(const std::string& host, std::uint16_t port)>
-            onPlayOnline;
+            onOpenLobbyBrowser;
 
-        // Enter the level creator with a blank canvas.
-        std::function<void()> onEnterLevelCreator;
+        // Open the level studio: a list of server-stored levels with a
+        // "Create New Level" button. Returns error message (empty on
+        // success). Implementation transitions to the level picker.
+        std::function<std::string(const std::string& host, std::uint16_t port)>
+            onOpenLevelCreator;
 
         // Quit the app (glfwSetWindowShouldClose).
         std::function<void()> onQuit;

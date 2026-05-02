@@ -13,6 +13,7 @@
 #include "render/texture_loader.hpp"
 #include "screens/level_creator_screen.hpp"
 #include "screens/level_picker_screen.hpp"
+#include "screens/lobby_browser_screen.hpp"
 #include "screens/main_menu_screen.hpp"
 #include "screens/online_level_select_screen.hpp"
 #include "screens/playing_screen.hpp"
@@ -65,8 +66,9 @@ using opm::client::game::kInvalidServerIndex;
 using opm::client::game::levelFromSnapshot;
 using opm::client::game::NetworkSessionContext;
 using opm::client::game::parseAddress;
+using opm::client::game::fetchLobbyList;
+using opm::client::game::joinNamedLobby;
 using opm::client::game::tryConnect;
-using opm::client::game::tryLobbyFlow;
 
 NetworkSessionContext gNetwork {};
 
@@ -175,21 +177,59 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
     // Per-screen handlers. MainMenuScreen is the first one carved out
     // of runWindow's monolithic ImGui block (Step 4 cont.). The others
     // still live as inline branches below until they're migrated.
+    // Refresh the cached lobby list and transition into the LobbyBrowser
+    // screen. Used by both MainMenu and the LobbyBrowser's Refresh button.
+    auto refreshLobbiesAndShow = [&](const std::string& host, std::uint16_t port) -> std::string {
+        std::vector<opm::client::game::LobbyListing> listings;
+        const auto res = fetchLobbyList(gNetwork, host, port, listings);
+        if (!res.ok) {
+            return res.message;
+        }
+        session.availableLobbies.clear();
+        session.availableLobbies.reserve(listings.size());
+        for (const auto& l : listings) {
+            session.availableLobbies.push_back(GameSession::LobbyEntry {
+                .name = l.name, .players = l.players, .capacity = l.capacity});
+        }
+        session.selectedLobbyIndex = -1;
+        session.lobbyBrowserStatus.clear();
+        session.state = AppState::LobbyBrowser;
+        return {};
+    };
+
     MainMenuScreen mainMenu(session, MainMenuScreen::Callbacks {
-        .onEnterLevelPicker = [&](const std::string& host, std::uint16_t port,
-                                  GameSession::PickerIntent intent) {
-            return enterLevelPicker(host, port, intent);
+        .onOpenLobbyBrowser = [&](const std::string& host, std::uint16_t port) -> std::string {
+            return refreshLobbiesAndShow(host, port);
         },
-        .onPlayQuickOffline = [&]() {
-            gNetwork.connected = false;
-            gNetwork.localPlayerIndex = kInvalidServerIndex;
-            gNetwork.actors.resetLocalOnly();
-            enterPlaying(false, fallbackLevel);
+        .onOpenLevelCreator = [&](const std::string& host, std::uint16_t port) -> std::string {
+            // Connect (sessionless), fetch the level catalogue, then show
+            // the picker which has both "Create New" and a list to load.
+            return enterLevelPicker(host, port, GameSession::PickerIntent::EditOnServer);
         },
-        .onPlayOnline = [&](const std::string& host, std::uint16_t port) -> std::string {
-            const auto result = tryLobbyFlow(gNetwork, host, port);
-            if (!result.ok) {
-                return result.message;
+        .onQuit = [&]() {
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
+        },
+    });
+
+    LobbyBrowserScreen lobbyBrowser(session, LobbyBrowserScreen::Callbacks {
+        .onRefresh = [&](const std::string& host, std::uint16_t port) -> std::string {
+            std::vector<opm::client::game::LobbyListing> listings;
+            const auto res = fetchLobbyList(gNetwork, host, port, listings);
+            if (!res.ok) {
+                return res.message;
+            }
+            session.availableLobbies.clear();
+            for (const auto& l : listings) {
+                session.availableLobbies.push_back(GameSession::LobbyEntry {
+                    .name = l.name, .players = l.players, .capacity = l.capacity});
+            }
+            return {};
+        },
+        .onJoin = [&](const std::string& host, std::uint16_t port,
+                      const std::string& lobbyName) -> std::string {
+            const auto res = joinNamedLobby(gNetwork, host, port, lobbyName);
+            if (!res.ok) {
+                return res.message;
             }
             std::string status;
             session.onlineLevels.clear();
@@ -201,23 +241,14 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             session.state = AppState::OnlineLevelSelect;
             return {};
         },
-        .onEnterLevelCreator = [&]() {
-            enterLevelCreator();
-        },
-        .onQuit = [&]() {
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
-        },
     });
 
     LevelPickerScreen levelPicker(session, LevelPickerScreen::Callbacks {
         .onEditLoadedLevel = [&](opm::engine::LevelData loaded, const std::string& name) {
             editLoadedLevel(std::move(loaded), name);
         },
-        .onPlayLoadedLevelOffline = [&](opm::engine::LevelData loaded) {
-            gNetwork.connected = false;
-            gNetwork.localPlayerIndex = kInvalidServerIndex;
-            gNetwork.actors.resetLocalOnly();
-            enterPlaying(false, loaded);
+        .onCreateNewLevel = [&]() {
+            enterLevelCreator();
         },
     });
 
@@ -354,7 +385,15 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
         std::uint16_t port = 0;
         if (parseAddress(clientArgs.testAddress, host, port)) {
             std::snprintf(session.addressInput, sizeof(session.addressInput), "%s", clientArgs.testAddress.c_str());
-            const auto result = tryLobbyFlow(gNetwork, host, port);
+            // Test mode joins the first lobby automatically (no UI loop available).
+            std::vector<opm::client::game::LobbyListing> listings;
+            const auto listRes = fetchLobbyList(gNetwork, host, port, listings);
+            opm::client::game::ConnectResult result {.ok = false, .message = listRes.message};
+            if (listRes.ok && !listings.empty()) {
+                result = joinNamedLobby(gNetwork, host, port, listings.front().name);
+            } else if (listRes.ok) {
+                result.message = "no lobbies advertised";
+            }
             if (result.ok && gNetwork.session) {
                 // Try to set the requested level.
                 std::string status;
@@ -466,6 +505,10 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
                 .session = gNetwork.session.get() };
             mainMenu.renderUI(screenCtx);
+        } else if (session.state == AppState::LobbyBrowser) {
+            ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
+                .session = gNetwork.session.get() };
+            lobbyBrowser.renderUI(screenCtx);
         } else if (session.state == AppState::LevelPicker) {
             ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
                 .session = gNetwork.session.get() };
@@ -493,13 +536,15 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
         // ---- Window title ----
         if (session.state == AppState::MainMenu) {
             glfwSetWindowTitle(window, "Open Platformer Maker");
+        } else if (session.state == AppState::LobbyBrowser) {
+            glfwSetWindowTitle(window, "Open Platformer Maker - Lobby Browser");
         } else if (session.state == AppState::LevelPicker) {
-            glfwSetWindowTitle(window, "Open Platformer Maker - Browse Levels");
+            glfwSetWindowTitle(window, "Open Platformer Maker - Level Studio");
         } else if (session.state == AppState::OnlineLevelSelect) {
             glfwSetWindowTitle(window, "Open Platformer Maker - Lobby");
         } else if (session.state == AppState::LevelCreator) {
             glfwSetWindowTitle(window, "Open Platformer Maker - Level Editor");
-        } else if (session.isOnline && gNetwork.session) {
+        } else if (gNetwork.session) {
             const bool netConnected = gNetwork.session->isConnected();
             const std::uint32_t pingMs = gNetwork.session->getPingMs();
             std::string title = "Open Platformer Maker - Online";
@@ -510,7 +555,7 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             }
             glfwSetWindowTitle(window, title.c_str());
         } else {
-            glfwSetWindowTitle(window, "Open Platformer Maker - Offline");
+            glfwSetWindowTitle(window, "Open Platformer Maker");
         }
 
         glfwSwapBuffers(window);

@@ -65,7 +65,39 @@ ConnectResult tryConnect(NetworkSessionContext& net, const std::string& host, st
     return {true, "connected"};
 }
 
-ConnectResult tryLobbyFlow(NetworkSessionContext& net, const std::string& host, std::uint16_t port)
+ConnectResult fetchLobbyList(NetworkSessionContext& net,
+                             const std::string& host, std::uint16_t port,
+                             std::vector<LobbyListing>& out)
+{
+    if (!net.session) {
+        net.session = std::make_unique<opm::client::net::SessionClient>();
+    }
+    out.clear();
+
+    std::string status;
+    if (!net.session->isConnected()) {
+        if (!net.session->connect(host, port, 1000U, status)) {
+            std::cout << "[client] connect status: " << status << "\n";
+            return {false, "connect failed: " + status};
+        }
+    }
+
+    std::vector<opm::client::net::LobbyInfo> lobbies;
+    if (!net.session->requestLobbyList(1000U, lobbies, status)) {
+        std::cout << "[client] lobby request status: " << status << "\n";
+        return {false, "lobby list failed: " + status};
+    }
+    out.reserve(lobbies.size());
+    for (const auto& l : lobbies) {
+        out.push_back(LobbyListing {.name = l.name, .players = l.players, .capacity = l.capacity});
+    }
+    std::cout << "[client] received " << out.size() << " lobby entries\n";
+    return {true, "ok"};
+}
+
+ConnectResult joinNamedLobby(NetworkSessionContext& net,
+                             const std::string& host, std::uint16_t port,
+                             const std::string& lobbyName)
 {
     if (!net.session) {
         net.session = std::make_unique<opm::client::net::SessionClient>();
@@ -74,29 +106,16 @@ ConnectResult tryLobbyFlow(NetworkSessionContext& net, const std::string& host, 
     net.actors.resetLocalOnly();
 
     std::string status;
-    if (!net.session->connect(host, port, 1000U, status)) {
-        std::cout << "[client] connect status: " << status << "\n";
-        return {false, "connect failed: " + status};
-    }
-
-    std::vector<opm::client::net::LobbyInfo> lobbies;
-    if (!net.session->requestLobbyList(1000U, lobbies, status)) {
-        std::cout << "[client] lobby request status: " << status << "\n";
-        return {false, "lobby list failed: " + status};
-    }
-    if (lobbies.empty()) {
-        return {false, "no lobbies advertised by server"};
-    }
-
-    std::cout << "[client] received " << lobbies.size() << " lobby entries\n";
-    for (const auto& lobby : lobbies) {
-        std::cout << "[client] lobby=" << lobby.name << " players=" << lobby.players
-                  << "/" << lobby.capacity << "\n";
+    if (!net.session->isConnected()) {
+        if (!net.session->connect(host, port, 1000U, status)) {
+            std::cout << "[client] connect status: " << status << "\n";
+            return {false, "connect failed: " + status};
+        }
     }
 
     opm::client::net::JoinResult joinResult;
-    const bool joined = net.session->joinLobby(lobbies.front().name, 1000U, joinResult, status);
-    std::cout << "[client] join lobby status: " << status
+    const bool joined = net.session->joinLobby(lobbyName, 1000U, joinResult, status);
+    std::cout << "[client] join lobby='" << lobbyName << "' status=" << status
               << " success=" << (joined ? "true" : "false")
               << " player=" << static_cast<int>(joinResult.playerIndex)
               << " tickHz=" << joinResult.tickRateHz << "\n";
@@ -129,7 +148,8 @@ ConnectResult tryLobbyFlow(NetworkSessionContext& net, const std::string& host, 
     }
 
     net.connected = true;
-    std::cout << "[client] network session active host=" << host << " port=" << port << "\n";
+    std::cout << "[client] network session active host=" << host << " port=" << port
+              << " lobby=" << lobbyName << "\n";
     return {true, "connected"};
 }
 

@@ -48,10 +48,24 @@ opm::engine::LevelData levelFromSnapshot(const opm::client::net::LevelSnapshot& 
 ConnectResult tryConnect(NetworkSessionContext& net,
                          const std::string& host, std::uint16_t port);
 
-// Full multiplayer join flow: connect, fetch lobby list, join the
-// first lobby, receive the initial level snapshot, prime the actor
-// roster. Mutates `net` extensively and prints progress to stdout.
-ConnectResult tryLobbyFlow(NetworkSessionContext& net,
-                           const std::string& host, std::uint16_t port);
+struct LobbyListing {
+    std::string name {};
+    std::uint32_t players {0};
+    std::uint32_t capacity {0};
+};
+
+// Connect (if not already) and request the server's lobby list. Fills
+// `out` and returns ok on success.
+ConnectResult fetchLobbyList(NetworkSessionContext& net,
+                             const std::string& host, std::uint16_t port,
+                             std::vector<LobbyListing>& out);
+
+// Join a specific lobby by name (must match an entry the server
+// advertised). Receives the level snapshot, primes the actor roster,
+// drains one StateUpdate. Caller transitions to the in-lobby screen
+// on success.
+ConnectResult joinNamedLobby(NetworkSessionContext& net,
+                             const std::string& host, std::uint16_t port,
+                             const std::string& lobbyName);
 
 } // namespace opm::client::game

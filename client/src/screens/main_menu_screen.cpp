@@ -31,7 +31,15 @@ void MainMenuScreen::renderUI(ScreenContext&)
     ImGui::Begin("Open Platformer Maker", nullptr,
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
 
-    // Server address is hardcoded to the default; field hidden from menu.
+    // Server address — required for both Lobby Browser and Level Creator,
+    // since both connect to the server (level catalogue lives there too).
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Server");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1.0F);
+    ImGui::InputText("##address", session.addressInput, sizeof(session.addressInput));
+
+    ImGui::Spacing();
 
     const auto resolveHostPort = [&](std::string& host, std::uint16_t& port) -> bool {
         if (!opm::client::game::parseAddress(session.addressInput, host, port)) {
@@ -41,50 +49,28 @@ void MainMenuScreen::renderUI(ScreenContext&)
         return true;
     };
 
-    if (ImGui::Button("Play Offline (browse server levels)", ImVec2(-1.0F, 36.0F))) {
+    if (ImGui::Button("Lobby Browser", ImVec2(-1.0F, 40.0F))) {
         std::string host;
         std::uint16_t port = 0;
         if (resolveHostPort(host, port)) {
-            session.menuStatus = callbacks_.onEnterLevelPicker(host, port,
-                opm::client::game::GameSession::PickerIntent::PlayOffline);
+            const auto err = callbacks_.onOpenLobbyBrowser(host, port);
+            session.menuStatus = err;
         }
     }
 
-    if (ImGui::Button("Quick Offline (built-in level)", ImVec2(-1.0F, 28.0F))) {
-        callbacks_.onPlayQuickOffline();
-        session.menuStatus.clear();
-    }
-
-    if (ImGui::Button("Play Online", ImVec2(-1.0F, 36.0F))) {
+    if (ImGui::Button("Level Creator", ImVec2(-1.0F, 40.0F))) {
         std::string host;
         std::uint16_t port = 0;
         if (resolveHostPort(host, port)) {
-            const auto err = callbacks_.onPlayOnline(host, port);
-            if (err.empty()) {
-                session.menuStatus.clear();
-            } else {
-                session.menuStatus = err;
-            }
-        }
-    }
-
-    if (ImGui::Button("Create Level", ImVec2(-1.0F, 36.0F))) {
-        callbacks_.onEnterLevelCreator();
-        session.menuStatus.clear();
-    }
-    if (ImGui::Button("Edit Server Level", ImVec2(-1.0F, 36.0F))) {
-        std::string host;
-        std::uint16_t port = 0;
-        if (resolveHostPort(host, port)) {
-            session.menuStatus = callbacks_.onEnterLevelPicker(host, port,
-                opm::client::game::GameSession::PickerIntent::EditOnServer);
+            const auto err = callbacks_.onOpenLevelCreator(host, port);
+            session.menuStatus = err;
         }
     }
 
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-    if (ImGui::Button("Quit", ImVec2(-1.0F, 28.0F))) {
+    if (ImGui::Button("Quit", ImVec2(-1.0F, 32.0F))) {
         callbacks_.onQuit();
     }
 

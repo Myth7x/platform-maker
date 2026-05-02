@@ -15,6 +15,7 @@ add_executable(opm_client
 	src/render/theme.cpp
 	src/screens/main_menu_screen.cpp
 	src/screens/level_picker_screen.cpp
+	src/screens/lobby_browser_screen.cpp
 	src/screens/online_level_select_screen.cpp
 	src/screens/level_creator_screen.cpp
 	src/screens/playing_screen.cpp
