@@ -8,6 +8,7 @@
 #include <imgui.h>
 #endif
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 
@@ -29,6 +30,33 @@ ScreenTransition OnlineLevelSelectScreen::tick(ScreenContext&, double)
     return {};
 }
 
+#ifdef OPM_CLIENT_HAS_IMGUI
+namespace {
+
+// Small section header: dim uppercase label + thin separator.
+void sectionHeader(const char* label)
+{
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextUnformatted(label);
+    ImGui::PopStyleColor();
+    ImGui::Separator();
+}
+
+// Filled circle drawn inline at the current cursor; advances the cursor
+// past it so the next SameLine'd widget aligns vertically with the dot.
+void inlineDot(const ImVec4& color, float radius)
+{
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 cur = ImGui::GetCursorScreenPos();
+    const float lineH = ImGui::GetTextLineHeight();
+    const ImVec2 center(cur.x + radius, cur.y + lineH * 0.5F);
+    dl->AddCircleFilled(center, radius, ImGui::ColorConvertFloat4ToU32(color));
+    ImGui::Dummy(ImVec2(radius * 2.0F + 8.0F, lineH));
+}
+
+} // namespace
+#endif
+
 void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
 {
 #ifdef OPM_CLIENT_HAS_IMGUI
@@ -38,10 +66,8 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
     ImGui::SetNextWindowPos(
         ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5F, vp->WorkPos.y + vp->WorkSize.y * 0.5F),
         ImGuiCond_Always, ImVec2(0.5F, 0.5F));
-    // Width fixed for predictable layout; height grows to fit so the
-    // theme's roomy padding doesn't clip the buttons / status text.
-    ImGui::SetNextWindowSize(ImVec2(520.0F, 0.0F));
-    ImGui::Begin("Lobby - Choose Level", nullptr,
+    ImGui::SetNextWindowSize(ImVec2(560.0F, 0.0F));
+    ImGui::Begin("Lobby", nullptr,
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar);
 
@@ -58,12 +84,22 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
     const bool votingMode = connectedCount >= 2U;
     const int localSlot = callbacks_.getLocalPlayerIndex ? callbacks_.getLocalPlayerIndex() : -1;
 
-    ImGui::Text("Connected as player %d.  %s", localSlot,
-        votingMode ? "Vote for the next level:" : "Pick a level for this lobby:");
-    ImGui::Separator();
+    const ImVec4 accent     = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
+    const ImVec4 amber      (0.95F, 0.74F, 0.30F, 1.0F);
+    const ImVec4 dimText    = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
 
-    // Per-level vote tally (only used in voting mode but built either way
-    // — cheap and shared by the rendering loop below).
+    // ===== Header =====
+    ImGui::Text("You are player");
+    ImGui::SameLine();
+    ImGui::TextColored(accent, "#%d", localSlot);
+    ImGui::SameLine();
+    ImGui::TextDisabled(votingMode
+        ? "  -  multiplayer mode (vote to pick the next level)"
+        : "  -  single player (pick a level to start)");
+
+    ImGui::Spacing();
+
+    // ===== Per-level vote helpers =====
     auto countVotesFor = [&](const std::string& name) -> int {
         int n = 0;
         for (const auto& v : session.mapVoteTally) {
@@ -85,55 +121,75 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
         return false;
     };
 
-    ImGui::BeginChild("##online_levels", ImVec2(0.0F, 240.0F), true);
-    for (int i = 0; i < static_cast<int>(session.onlineLevels.size()); ++i) {
-        const auto& name = session.onlineLevels[static_cast<std::size_t>(i)];
-        const bool selected = session.onlineLevelSelected == i;
+    // ===== Levels =====
+    sectionHeader(votingMode ? "VOTE FOR A LEVEL" : "LEVELS");
 
-        // Right-aligned vote tally text inside the row.
-        char rowLabel[160];
-        if (votingMode) {
-            const int votes = countVotesFor(name);
-            const char* mark = isMyVote(name) ? "*" : " ";
-            std::snprintf(rowLabel, sizeof(rowLabel), "%s   [%s%d vote%s]",
-                name.c_str(), mark, votes, votes == 1 ? "" : "s");
-        } else {
-            std::snprintf(rowLabel, sizeof(rowLabel), "%s", name.c_str());
-        }
+    constexpr ImGuiTableFlags kTableFlags =
+        ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
+        ImGuiTableFlags_PadOuterX;
+    const float listH = 240.0F;
+    if (ImGui::BeginTable("##levels", 2, kTableFlags, ImVec2(0.0F, listH))) {
+        ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Votes", ImGuiTableColumnFlags_WidthFixed, 90.0F);
 
-        if (ImGui::Selectable(rowLabel, selected)) {
-            session.onlineLevelSelected = i;
-            if (votingMode) {
-                // Click = vote (and visually select). Withdraw + re-cast
-                // is a single click.
-                callbacks_.onCastVote(name);
+        for (int i = 0; i < static_cast<int>(session.onlineLevels.size()); ++i) {
+            const auto& name = session.onlineLevels[static_cast<std::size_t>(i)];
+            const bool selected = session.onlineLevelSelected == i;
+            const int votes = votingMode ? countVotesFor(name) : 0;
+            const bool myVote = votingMode && isMyVote(name);
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::PushID(i);
+            // Selectable spans both columns so the whole row is hot.
+            if (ImGui::Selectable(name.c_str(), selected,
+                    ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick)) {
+                session.onlineLevelSelected = i;
+                if (votingMode) {
+                    callbacks_.onCastVote(name);
+                }
             }
+            ImGui::TableNextColumn();
+            if (votingMode) {
+                if (votes > 0) {
+                    ImGui::TextColored(myVote ? amber : accent, "%d %s",
+                        votes, votes == 1 ? "vote" : "votes");
+                } else {
+                    ImGui::TextDisabled("-");
+                }
+            } else {
+                ImGui::TextDisabled("-");
+            }
+            ImGui::PopID();
         }
+        ImGui::EndTable();
     }
     if (session.onlineLevels.empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-        ImGui::TextWrapped("(no levels on server — use the editor first, or play with the default)");
+        ImGui::PushStyleColor(ImGuiCol_Text, dimText);
+        ImGui::TextWrapped("(no levels on server — make one in the editor first)");
         ImGui::PopStyleColor();
     }
-    ImGui::EndChild();
 
-    ImGui::Separator();
+    ImGui::Spacing();
 
+    // ===== Actions =====
     if (votingMode) {
         const bool canVote = session.onlineLevelSelected >= 0 &&
             session.onlineLevelSelected < static_cast<int>(session.onlineLevels.size());
         ImGui::BeginDisabled(!canVote);
-        if (ImGui::Button("Vote for Selected", ImVec2(180.0F, 32.0F))) {
+        // Primary action — wider, accent-colored (theme already paints
+        // it accent so just give it presence).
+        if (ImGui::Button("Cast Vote", ImVec2(180.0F, 36.0F))) {
             const auto& name = session.onlineLevels[static_cast<std::size_t>(session.onlineLevelSelected)];
             callbacks_.onCastVote(name);
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("Withdraw Vote", ImVec2(140.0F, 32.0F))) {
+        if (ImGui::Button("Withdraw", ImVec2(120.0F, 36.0F))) {
             callbacks_.onCastVote("");
         }
         ImGui::SameLine();
-        if (ImGui::Button("Refresh", ImVec2(90.0F, 32.0F))) {
+        if (ImGui::Button("Refresh", ImVec2(110.0F, 36.0F))) {
             const auto err = callbacks_.onRefresh();
             if (err.empty()) {
                 session.onlineLevelStatus.clear();
@@ -142,16 +198,15 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
                 session.onlineLevelStatus = err;
             }
         }
-        ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-        ImGui::TextWrapped("Voting: pick a level then wait for the countdown — the most-voted level loads when the round starts. * marks your vote.");
+        ImGui::PushStyleColor(ImGuiCol_Text, dimText);
+        ImGui::TextUnformatted("Most-voted level loads when the round starts.");
         ImGui::PopStyleColor();
     } else {
         const bool canSet = session.onlineLevelSelected >= 0 &&
             session.onlineLevelSelected < static_cast<int>(session.onlineLevels.size()) &&
             ctx.session != nullptr && ctx.session->isConnected();
         ImGui::BeginDisabled(!canSet);
-        if (ImGui::Button("Use Selected Level", ImVec2(180.0F, 32.0F))) {
+        if (ImGui::Button("Use Selected", ImVec2(180.0F, 36.0F))) {
             const auto& name = session.onlineLevels[static_cast<std::size_t>(session.onlineLevelSelected)];
             const auto err = callbacks_.onUseSelectedLevel(name);
             if (err.empty()) {
@@ -162,12 +217,12 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("Use Current Level", ImVec2(160.0F, 32.0F))) {
+        if (ImGui::Button("Use Current", ImVec2(140.0F, 36.0F))) {
             callbacks_.onUseCurrentLevel();
             session.onlineLevelStatus.clear();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Refresh", ImVec2(90.0F, 32.0F))) {
+        if (ImGui::Button("Refresh", ImVec2(110.0F, 36.0F))) {
             const auto err = callbacks_.onRefresh();
             if (err.empty()) {
                 session.onlineLevelStatus.clear();
@@ -178,89 +233,86 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
         }
     }
 
-    ImGui::Spacing();
-    if (ImGui::Button("Disconnect", ImVec2(120.0F, 28.0F))) {
-        callbacks_.onDisconnect();
-        session.onlineLevelStatus.clear();
-    }
-
     if (!session.onlineLevelStatus.empty()) {
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(1.0F, 0.55F, 0.45F, 1.0F), "%s", session.onlineLevelStatus.c_str());
+        ImGui::TextColored(ImVec4(1.0F, 0.55F, 0.45F, 1.0F),
+                           "%s", session.onlineLevelStatus.c_str());
     }
 
-    // ===== Player list footer =====
-    // Pulled from ctx.net->actors so we get both the local player and
-    // every remote roster entry the server has told us about. Local
-    // entry is highlighted via the accent color.
+    // ===== Players =====
     if (ctx.net != nullptr) {
         ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
+        char playersHeader[64];
+        std::snprintf(playersHeader, sizeof(playersHeader),
+            "PLAYERS  (%zu)", connectedCount);
+        sectionHeader(playersHeader);
 
-        const auto& actors = ctx.net->actors.actors();
-        std::size_t connectedCount = 0;
-        for (const auto& a : actors) {
-            if (a.isLocal || a.info.connected) {
-                connectedCount += 1;
-            }
-        }
-        ImGui::TextDisabled("Players in lobby (%zu):", connectedCount);
-        ImGui::BeginChild("##player_list", ImVec2(0.0F, 140.0F), true);
-        for (const auto& a : actors) {
-            if (!a.isLocal && !a.info.connected) {
-                continue;
-            }
-            const auto& info = a.info;
-            char nameBuf[160];
-            const char* displayName = !info.displayName.empty()
-                ? info.displayName.c_str()
-                : "Player";
-            const std::uint16_t slot = a.isLocal && a.serverIndex != opm::client::game::kInvalidServerIndex
-                ? a.serverIndex
-                : info.playerIndex;
-            // Append "→ levelname" if this player has cast a vote.
-            const char* votedLevel = "";
-            for (const auto& v : session.mapVoteTally) {
-                if (v.slotIndex == slot && !v.levelName.empty()) {
-                    votedLevel = v.levelName.c_str();
-                    break;
+        const float playerListH = std::max(80.0F,
+            std::min(180.0F, static_cast<float>(connectedCount) * 28.0F + 20.0F));
+
+        if (ImGui::BeginTable("##players", 2, kTableFlags, ImVec2(0.0F, playerListH))) {
+            ImGui::TableSetupColumn("Player", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Vote", ImGuiTableColumnFlags_WidthFixed, 160.0F);
+
+            for (const auto& a : ctx.net->actors.actors()) {
+                if (!a.isLocal && !a.info.connected) {
+                    continue;
+                }
+                const auto& info = a.info;
+                const std::uint16_t slot = a.isLocal &&
+                    a.serverIndex != opm::client::game::kInvalidServerIndex
+                    ? a.serverIndex
+                    : info.playerIndex;
+                const char* displayName = !info.displayName.empty()
+                    ? info.displayName.c_str()
+                    : "Player";
+
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                const ImVec4 swatch = a.isLocal
+                    ? accent
+                    : ImVec4(static_cast<float>(info.colorR) / 255.0F,
+                             static_cast<float>(info.colorG) / 255.0F,
+                             static_cast<float>(info.colorB) / 255.0F, 1.0F);
+                inlineDot(swatch, ImGui::GetTextLineHeight() * 0.45F);
+                ImGui::SameLine();
+                if (a.isLocal) {
+                    ImGui::TextColored(accent, "#%u  %s  (you)",
+                        static_cast<unsigned>(slot), displayName);
+                } else {
+                    ImGui::Text("#%u  %s", static_cast<unsigned>(slot), displayName);
+                }
+
+                ImGui::TableNextColumn();
+                const char* votedLevel = nullptr;
+                for (const auto& v : session.mapVoteTally) {
+                    if (v.slotIndex == slot && !v.levelName.empty()) {
+                        votedLevel = v.levelName.c_str();
+                        break;
+                    }
+                }
+                if (votedLevel != nullptr) {
+                    ImGui::TextColored(amber, "-> %s", votedLevel);
+                } else {
+                    ImGui::TextDisabled(votingMode ? "(no vote)" : "-");
                 }
             }
-            std::snprintf(nameBuf, sizeof(nameBuf), "#%u  %s%s%s%s",
-                static_cast<unsigned>(slot),
-                displayName,
-                a.isLocal ? "  (you)" : "",
-                votedLevel[0] != '\0' ? "  -> " : "",
-                votedLevel);
-
-            // Color swatch + name. Use the accent for local, the
-            // server-provided color for remotes.
-            const ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
-            const ImVec4 swatch = a.isLocal
-                ? accent
-                : ImVec4(static_cast<float>(info.colorR) / 255.0F,
-                         static_cast<float>(info.colorG) / 255.0F,
-                         static_cast<float>(info.colorB) / 255.0F, 1.0F);
-            ImDrawList* dl = ImGui::GetWindowDrawList();
-            const ImVec2 cur = ImGui::GetCursorScreenPos();
-            const float dotR = ImGui::GetTextLineHeight() * 0.45F;
-            const ImVec2 dotCenter(cur.x + dotR, cur.y + ImGui::GetTextLineHeight() * 0.5F);
-            dl->AddCircleFilled(dotCenter, dotR, ImGui::ColorConvertFloat4ToU32(swatch));
-            ImGui::Dummy(ImVec2(dotR * 2.0F + 6.0F, ImGui::GetTextLineHeight()));
-            ImGui::SameLine();
-            if (a.isLocal) {
-                ImGui::TextColored(accent, "%s", nameBuf);
-            } else {
-                ImGui::TextUnformatted(nameBuf);
-            }
+            ImGui::EndTable();
         }
         if (connectedCount == 0) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::PushStyleColor(ImGuiCol_Text, dimText);
             ImGui::TextWrapped("(no players reported yet — waiting for roster)");
             ImGui::PopStyleColor();
         }
-        ImGui::EndChild();
+    }
+
+    // ===== Footer =====
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    if (ImGui::Button("Disconnect", ImVec2(140.0F, 32.0F))) {
+        callbacks_.onDisconnect();
+        session.onlineLevelStatus.clear();
     }
 
     ImGui::End();
