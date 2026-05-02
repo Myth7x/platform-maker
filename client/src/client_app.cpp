@@ -268,10 +268,12 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
                 session.selectedMap = discard.selectedMap;
                 session.selectedTiebreak = discard.selectedTiebreak;
             }
-            // If the server transitioned us into Playing while we're
-            // still on the lobby screen, auto-jump into the gameplay
-            // screen using the latest snapshot the server pushed.
-            if (session.gamePhase == opm::protocol::GamePhase::Playing
+            // If the server transitioned us into RoundStarting (5s
+            // intro countdown) or Playing (race underway), auto-jump
+            // into the gameplay screen using the latest snapshot the
+            // server pushed.
+            if ((session.gamePhase == opm::protocol::GamePhase::RoundStarting
+              || session.gamePhase == opm::protocol::GamePhase::Playing)
                 && session.state == AppState::OnlineLevelSelect) {
                 enterPlaying(true, gNetwork.networkLevel);
             }

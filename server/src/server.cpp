@@ -477,7 +477,8 @@ void Server::tickStepSimulation()
     // physics moved someone outside (or they spawned just outside), pull
     // them back. Done after the step so the visible position next tick
     // is the clamped one.
-    if (gamePhase_ == opm::protocol::GamePhase::PreGame) {
+    if (gamePhase_ == opm::protocol::GamePhase::PreGame
+     || gamePhase_ == opm::protocol::GamePhase::RoundStarting) {
         confinePlayersToSafeZone();
     }
 }
@@ -548,10 +549,10 @@ void Server::enterPreGame()
     std::cout << "[server] phase -> PreGame (waiting for votes)\n";
 }
 
-void Server::enterPlaying()
+void Server::enterRoundStarting()
 {
-    gamePhase_ = opm::protocol::GamePhase::Playing;
-    countdownTicks_ = 0;
+    gamePhase_ = opm::protocol::GamePhase::RoundStarting;
+    countdownTicks_ = kRoundStartCountdownTicks;
     winnerSlot_ = kNoWinnerSlot;
     // selectedMap_ was set by pickWinningMap() during the announce
     // sub-phase. Apply it here, then clear so the next PreGame starts
@@ -564,7 +565,7 @@ void Server::enterPlaying()
         std::string err;
         if (levelStorage_.load(winningLevel, level, err)) {
             simulation_.setLevel(level);
-            std::cout << "[server] phase -> Playing on voted level '" << winningLevel << "'\n";
+            std::cout << "[server] phase -> RoundStarting on voted level '" << winningLevel << "'\n";
             const auto payloadBytes = opm::protocol::encodeLevelSnapshotPayload(simulation_.level());
             WireBuilder wire;
             wire.build(opm::protocol::MessageType::LevelSnapshot, payloadBytes);
@@ -572,11 +573,11 @@ void Server::enterPlaying()
                 (void)conn.send(wire.view());
             }
         } else {
-            std::cout << "[server] phase -> Playing (vote winner '" << winningLevel
+            std::cout << "[server] phase -> RoundStarting (vote winner '" << winningLevel
                       << "' failed to load: " << err << "); keeping current level\n";
         }
     } else {
-        std::cout << "[server] phase -> Playing on current level (no votes)\n";
+        std::cout << "[server] phase -> RoundStarting on current level (no votes)\n";
     }
     // Respawn all active players at the (possibly new) spawn.
     for (std::size_t i = 0; i < simulation_.state().players.size(); ++i) {
@@ -584,6 +585,14 @@ void Server::enterPlaying()
             simulation_.respawnPlayer(i);
         }
     }
+}
+
+void Server::enterPlaying()
+{
+    gamePhase_ = opm::protocol::GamePhase::Playing;
+    countdownTicks_ = 0;
+    winnerSlot_ = kNoWinnerSlot;
+    std::cout << "[server] phase -> Playing (race begins)\n";
 }
 
 void Server::enterGameOver(std::uint16_t winnerSlot)
@@ -667,8 +676,11 @@ void Server::tickGamePhase()
                 countdownTicks_ -= 1U;
                 if (countdownTicks_ == 0U) {
                     if (announcing) {
-                        // Announce sub-phase ended -> start the round.
-                        enterPlaying();
+                        // Announce sub-phase ended -> hand the round
+                        // off to the gameplay screen, but with a 5s
+                        // intro countdown during which players are
+                        // confined to the spawn safezone.
+                        enterRoundStarting();
                     } else {
                         // Voting sub-phase ended -> pick winning map and
                         // hold for kAnnounceTicks so clients can show
@@ -681,6 +693,14 @@ void Server::tickGamePhase()
             }
             break;
         }
+        case opm::protocol::GamePhase::RoundStarting:
+            if (countdownTicks_ > 0U) {
+                countdownTicks_ -= 1U;
+                if (countdownTicks_ == 0U) {
+                    enterPlaying();
+                }
+            }
+            break;
         case opm::protocol::GamePhase::Playing: {
             const auto winner = firstPlayerAtGoal();
             if (winner != kNoWinnerSlot) {

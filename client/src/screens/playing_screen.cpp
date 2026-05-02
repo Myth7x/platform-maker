@@ -28,6 +28,8 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -62,6 +64,18 @@ ScreenTransition PlayingScreen::tick(ScreenContext& ctx, double)
         return {};
     }
     auto& net = *ctx.net;
+
+    // Auto-return to the lobby when the server signals end-of-round.
+    // GameOver display is handled via the renderUI overlay; the moment
+    // the server flips back to PreGame (post-display) we drop the
+    // gameplay screen and re-enter the lobby. The fromEditor escape
+    // hatch (Test Play) bypasses this — that flow returns to the editor.
+    if (!session.fromEditor
+     && session.gamePhase == opm::protocol::GamePhase::PreGame
+     && session.isOnline) {
+        session.state = opm::client::game::AppState::OnlineLevelSelect;
+        return {};
+    }
 
     constexpr float kFixedStepSeconds = 1.0F / 60.0F;
 
@@ -446,27 +460,85 @@ void PlayingScreen::render(ScreenContext& ctx)
 #endif
 }
 
-void PlayingScreen::renderUI(ScreenContext&)
+void PlayingScreen::renderUI(ScreenContext& ctx)
 {
 #ifdef OPM_CLIENT_HAS_IMGUI
     auto& session = *session_;
-    if (!session.fromEditor) {
+
+    // ===== Test Play HUD =====
+    if (session.fromEditor) {
+        ImGui::SetNextWindowPos(ImVec2(8.0F, 8.0F), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(0.0F, 0.0F));
+        ImGui::Begin("##testplay_hud", nullptr,
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing);
+        ImGui::TextColored(ImVec4(1.0F, 0.85F, 0.3F, 1.0F), "TEST PLAY");
+        ImGui::SameLine();
+        if (ImGui::Button("Back to Editor")) {
+            session.fromEditor = false;
+            session.state = opm::client::game::AppState::LevelCreator;
+        }
+        ImGui::End();
+    }
+
+    // Phase-driven overlays only apply during online play (the editor
+    // test-play path bypasses the lobby state machine entirely).
+    if (session.fromEditor || !session.isOnline) {
         return;
     }
-    // Test Play HUD: Back to Editor button.
-    ImGui::SetNextWindowPos(ImVec2(8.0F, 8.0F), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(0.0F, 0.0F));
-    ImGui::Begin("##testplay_hud", nullptr,
-        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing);
-    ImGui::TextColored(ImVec4(1.0F, 0.85F, 0.3F, 1.0F), "TEST PLAY");
-    ImGui::SameLine();
-    if (ImGui::Button("Back to Editor")) {
-        session.fromEditor = false;
-        session.state = opm::client::game::AppState::LevelCreator;
+
+    constexpr float kTicksPerSecond = 60.0F;
+    const float secondsRemaining =
+        static_cast<float>(session.countdownTicks) / kTicksPerSecond;
+
+    auto centeredOverlay = [&](const char* tag, const char* text) {
+        ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(
+            ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5F,
+                   vp->WorkPos.y + vp->WorkSize.y * 0.40F),
+            ImGuiCond_Always, ImVec2(0.5F, 0.5F));
+        ImGui::SetNextWindowSize(ImVec2(0.0F, 0.0F));
+        ImGui::Begin(tag, nullptr,
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoInputs);
+        ImGui::SetWindowFontScale(2.4F);
+        ImGui::TextUnformatted(text);
+        ImGui::SetWindowFontScale(1.0F);
+        ImGui::End();
+    };
+
+    char buf[160];
+
+    // ===== RoundStarting countdown =====
+    if (session.gamePhase == opm::protocol::GamePhase::RoundStarting) {
+        const int s = std::max(1, static_cast<int>(std::ceil(secondsRemaining)));
+        std::snprintf(buf, sizeof(buf), "GET READY  -  %d", s);
+        centeredOverlay("##roundstart_overlay", buf);
     }
-    ImGui::End();
+
+    // ===== GameOver winner banner =====
+    if (session.gamePhase == opm::protocol::GamePhase::GameOver) {
+        const int s = std::max(0, static_cast<int>(std::ceil(secondsRemaining)));
+        const bool weWon =
+            ctx.net != nullptr && session.winnerSlot != 0xFFFFU &&
+            ctx.net->actors.localActor() != nullptr &&
+            ctx.net->actors.localActor()->serverIndex == session.winnerSlot;
+        if (weWon) {
+            std::snprintf(buf, sizeof(buf),
+                "YOU WIN!\nReturning to lobby in %ds", s);
+        } else if (session.winnerSlot != 0xFFFFU) {
+            std::snprintf(buf, sizeof(buf),
+                "PLAYER #%u WINS\nReturning to lobby in %ds",
+                static_cast<unsigned>(session.winnerSlot), s);
+        } else {
+            std::snprintf(buf, sizeof(buf),
+                "ROUND OVER\nReturning to lobby in %ds", s);
+        }
+        centeredOverlay("##gameover_overlay", buf);
+    }
 #endif
 }
 

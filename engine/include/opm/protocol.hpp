@@ -37,9 +37,10 @@ enum class MessageType : std::uint8_t {
 // Server-tracked game phase for the active session. Broadcast on every
 // StateUpdate so clients can render the right HUD overlay.
 enum class GamePhase : std::uint8_t {
-    PreGame = 0,   // 1+ players present, countdown ticking, players confined to spawn safezone
-    Playing = 1,   // race in progress, first-to-goal wins
-    GameOver = 2,  // someone won (or everyone left); brief display before reset
+    PreGame = 0,        // lobby: voting + announce; players confined to safezone
+    Playing = 1,        // race in progress, first-to-goal wins
+    GameOver = 2,       // someone won (or everyone left); brief display before reset
+    RoundStarting = 3,  // post-lobby intro: 5s countdown, players confined to safezone
 };
 
 struct Message {

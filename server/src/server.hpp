@@ -31,7 +31,11 @@ inline constexpr std::uint32_t kAllVotedCountdownTicks  = kTickRateHz * 15U;
 // every client can show a "selected: X" announcement before the
 // gameplay screen takes over.
 inline constexpr std::uint32_t kAnnounceTicks           = kTickRateHz * 3U;
-inline constexpr std::uint32_t kGameOverDisplayTicks    = kTickRateHz * 6U;  // winner display
+// After clients have transitioned into the gameplay screen, the server
+// holds in RoundStarting for this many ticks. Players spawn but stay
+// confined to the spawn safezone, with a "Round starts in 5..." HUD.
+inline constexpr std::uint32_t kRoundStartCountdownTicks = kTickRateHz * 5U;
+inline constexpr std::uint32_t kGameOverDisplayTicks    = kTickRateHz * 5U;  // winner display
 inline constexpr std::uint16_t kNoWinnerSlot            = 0xFFFFU;
 
 // Top-level orchestrator. Owns the listen socket, lobbies, connection table,
@@ -59,7 +63,8 @@ private:
 
     // ---- game-phase helpers ----
     void enterPreGame();
-    void enterPlaying();
+    void enterRoundStarting();   // transitions from PreGame announce to gameplay countdown
+    void enterPlaying();         // transitions from RoundStarting to actual race
     void enterGameOver(std::uint16_t winnerSlot);
     void confinePlayersToSafeZone();
     [[nodiscard]] std::uint16_t firstPlayerAtGoal() const;
