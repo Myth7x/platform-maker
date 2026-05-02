@@ -65,18 +65,6 @@ ScreenTransition PlayingScreen::tick(ScreenContext& ctx, double)
     }
     auto& net = *ctx.net;
 
-    // Auto-return to the lobby when the server signals end-of-round.
-    // GameOver display is handled via the renderUI overlay; the moment
-    // the server flips back to PreGame (post-display) we drop the
-    // gameplay screen and re-enter the lobby. The fromEditor escape
-    // hatch (Test Play) bypasses this — that flow returns to the editor.
-    if (!session.fromEditor
-     && session.gamePhase == opm::protocol::GamePhase::PreGame
-     && session.isOnline) {
-        session.state = opm::client::game::AppState::OnlineLevelSelect;
-        return {};
-    }
-
     constexpr float kFixedStepSeconds = 1.0F / 60.0F;
 
     if (!timingInitialized_) {
@@ -122,7 +110,25 @@ ScreenTransition PlayingScreen::tick(ScreenContext& ctx, double)
             bool gotTick = false;
             while (net.session->pollStateUpdate(0U, update, netStatus)) {
                 net.actors.applyStateUpdate(update, net.localPlayerIndex);
+                // Mirror phase / countdown / winner so PlayingScreen UI
+                // (countdown overlay, win banner, auto-return) sees
+                // fresh values. The lobby's onPollServer does this on
+                // its side; once we're in PlayingScreen there is no
+                // other writer.
+                session.gamePhase = update.phase;
+                session.countdownTicks = update.countdownTicks;
+                session.winnerSlot = update.winnerSlot;
+                session.selectedMap = update.selectedMap;
+                session.selectedTiebreak = update.selectedTiebreak;
                 gotTick = true;
+            }
+            // After draining: if the server has flipped back to PreGame
+            // (i.e. post-GameOver lobby reset), drop the gameplay screen
+            // and re-enter the lobby. fromEditor (Test Play) bypasses.
+            if (!session.fromEditor
+             && session.gamePhase == opm::protocol::GamePhase::PreGame) {
+                session.state = opm::client::game::AppState::OnlineLevelSelect;
+                return {};
             }
 
             std::vector<std::vector<opm::protocol::PlayerInfo>> rosterUpdates;
