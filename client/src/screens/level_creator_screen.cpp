@@ -493,8 +493,13 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
     auto& enemyRegistry = ctx.assets.enemies;
     auto& powerupRegistry = ctx.assets.powerups;
 
-    constexpr float kTopBarH    = 38.0F;
-    constexpr float kBottomBarH = 34.0F;
+    // Chrome bars use a tighter WindowPadding (set per-Begin below) so
+    // a single row of buttons / text centers inside them. Heights chosen
+    // to match the theme's button height (text + 2*FramePadding.y) plus
+    // the chrome WindowPadding.
+    constexpr float kTopBarH    = 50.0F;
+    constexpr float kBottomBarH = 30.0F;
+    constexpr ImVec2 kChromePadding {10.0F, 6.0F};
     constexpr float kMinSidebarW = 140.0F;
     constexpr float kMaxSidebarW = 480.0F;
     // Anchored panels: not movable, not collapsible, no saved settings,
@@ -536,6 +541,7 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
     // ===== Top bar: file / playtest actions =====
     ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
     ImGui::SetNextWindowSize(ImVec2(fbW, kTopBarH));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, kChromePadding);
     ImGui::Begin("##creator_topbar", nullptr, kFixedPanelFlags);
     {
         ImGui::AlignTextToFramePadding();
@@ -567,6 +573,7 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
         }
     }
     ImGui::End();
+    ImGui::PopStyleVar(); // kChromePadding (topbar)
 
     // ===== Left sidebar: layer + markers + size =====
     ImGui::SetNextWindowPos(ImVec2(0.0F, kTopBarH));
@@ -895,6 +902,7 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
     // ===== Bottom status bar =====
     ImGui::SetNextWindowPos(ImVec2(0.0F, fbH - kBottomBarH));
     ImGui::SetNextWindowSize(ImVec2(fbW, kBottomBarH));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, kChromePadding);
     ImGui::Begin("##creator_status", nullptr, kFixedPanelFlags);
     {
         ImGui::AlignTextToFramePadding();
@@ -938,6 +946,7 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
         }
     }
     ImGui::End();
+    ImGui::PopStyleVar(); // kChromePadding (statusbar)
 #endif
 }
 
