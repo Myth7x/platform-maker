@@ -49,8 +49,10 @@ void applyMarioMaker2()
 
     // ---- Colors ----
     // Warm-dark indigo base, vivid sky-blue primary, amber highlight.
-    const ImVec4 kBgDeep      = rgba(0x1A, 0x1F, 0x2C);
-    const ImVec4 kBgPanel     = rgba(0x26, 0x2C, 0x3A);
+    // Window backgrounds use alpha < 1 so the GL viewport bleeds
+    // through (gives the editor a "floating panels over canvas" feel).
+    const ImVec4 kBgDeep      = rgba(0x1A, 0x1F, 0x2C, 0.85F);
+    const ImVec4 kBgPanel     = rgba(0x26, 0x2C, 0x3A, 0.92F);
     const ImVec4 kBgFrame     = rgba(0x2D, 0x33, 0x44);
     const ImVec4 kBgFrameHov  = rgba(0x3A, 0x42, 0x58);
     const ImVec4 kBgFrameAct  = rgba(0x44, 0x4E, 0x68);

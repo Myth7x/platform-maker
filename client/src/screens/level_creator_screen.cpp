@@ -735,24 +735,26 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
             layerLabel = "Foreground";
             layerColor = ImVec4(1.0F, 0.8F, 0.6F, 1.0F);
         }
+        // Collision-mask inspector toggle: small chevron on the row
+        // with the TILES header. Chevron points LEFT when closed (hint
+        // that the panel will appear in that direction); RIGHT when
+        // open (click to collapse it back).
+        {
+            const ImGuiDir dir = session.editor.collisionInspectorOpen
+                ? ImGuiDir_Right : ImGuiDir_Left;
+            if (ImGui::ArrowButton("##collision_toggle", dir)) {
+                session.editor.collisionInspectorOpen = !session.editor.collisionInspectorOpen;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s collision-mask inspector",
+                    session.editor.collisionInspectorOpen ? "Hide" : "Show");
+            }
+            ImGui::SameLine();
+        }
         ImGui::TextDisabled("TILES");
         ImGui::SameLine();
         ImGui::TextColored(layerColor, "[%s]", layerLabel);
         ImGui::Separator();
-
-        // Collision-mask inspector toggle. Hidden by default; pops the
-        // separate inspector panel open to the left of this sidebar.
-        {
-            const ImVec4 onCol(0.85F, 0.55F, 0.20F, 1.0F);
-            const char* label = session.editor.collisionInspectorOpen
-                ? "Collision \xE2\x9C\x95"   // "Collision ✕" (close)
-                : "Collision \xE2\x80\xA6";  // "Collision …" (open)
-            if (toggleButton(label, session.editor.collisionInspectorOpen,
-                             onCol, -1.0F, 26.0F)) {
-                session.editor.collisionInspectorOpen = !session.editor.collisionInspectorOpen;
-            }
-        }
-        ImGui::Spacing();
 
         const bool eraserSelected = session.editor.selectedTile == 0U
             && !session.editor.placingSpawn && !session.editor.placingGoal;
