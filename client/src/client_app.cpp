@@ -6,6 +6,7 @@
 #include "screens/level_picker_screen.hpp"
 #include "screens/main_menu_screen.hpp"
 #include "screens/online_level_select_screen.hpp"
+#include "screens/playing_screen.hpp"
 #include "net_client.hpp"
 #include "render/asset_registry.hpp"
 #include "render/render_context.hpp"
@@ -607,6 +608,8 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
             session.state = AppState::MainMenu;
         },
     });
+
+    PlayingScreen playing(session);
 
     bool jumpHeldLast = false;
     double previousTime = glfwGetTime();
@@ -1942,21 +1945,9 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
             ImGui::End();
 
             // ---- Canvas painting (handled below in input section) ----
-        } else if (session.state == AppState::Playing && session.fromEditor) {
-            // ---- Test Play HUD: Back to Editor button ----
-            ImGui::SetNextWindowPos(ImVec2(8.0F, 8.0F), ImGuiCond_Always);
-            ImGui::SetNextWindowSize(ImVec2(0.0F, 0.0F));
-            ImGui::Begin("##testplay_hud", nullptr,
-                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing);
-            ImGui::TextColored(ImVec4(1.0F, 0.85F, 0.3F, 1.0F), "TEST PLAY");
-            ImGui::SameLine();
-            if (ImGui::Button("Back to Editor")) {
-                session.fromEditor = false;
-                session.state = AppState::LevelCreator;
-            }
-            ImGui::End();
+        } else if (session.state == AppState::Playing) {
+            ScreenContext screenCtx { nullptr, renderCtx, assets, gNetwork.session.get() };
+            playing.renderUI(screenCtx);
         }
 
         ImGui::Render();
