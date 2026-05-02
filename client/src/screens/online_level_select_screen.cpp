@@ -162,7 +162,13 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
     constexpr ImGuiTableFlags kTableFlags =
         ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
         ImGuiTableFlags_PadOuterX;
-    const float listH = 240.0F;
+    // Reserve space for everything below the level list so the bottom
+    // (action buttons + hint + PLAYERS + Disconnect) stays visible at
+    // any window height. Numbers are conservative — table just stretches
+    // to whatever's left.
+    constexpr float kReservedBelow = 320.0F;
+    const float availH = ImGui::GetContentRegionAvail().y;
+    const float listH = std::max(160.0F, availH - kReservedBelow);
     if (ImGui::BeginTable("##levels", 2, kTableFlags, ImVec2(0.0F, listH))) {
         ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Votes", ImGuiTableColumnFlags_WidthFixed, 90.0F);
