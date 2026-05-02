@@ -449,6 +449,9 @@ bool SessionClient::pollStateUpdate(const std::uint32_t timeoutMs, StateUpdate& 
 
     const auto payload = opm::protocol::decodeStateUpdatePayload(message.payload);
     update.serverTick = payload.serverTick;
+    update.phase = payload.phase;
+    update.countdownTicks = payload.countdownTicks;
+    update.winnerSlot = payload.winnerSlot;
     update.players.clear();
     update.players.reserve(payload.players.size());
     for (const auto& player : payload.players) {

@@ -61,6 +61,13 @@ struct GameSession {
     // per voting player). Updated by the lobby screen's onPollServer.
     std::vector<opm::protocol::MapVote> mapVoteTally {};
 
+    // Mirrored game-phase fields from the latest StateUpdate. The lobby
+    // and gameplay HUDs read these to render the countdown / winner
+    // overlay. Always updated whenever a StateUpdate arrives.
+    opm::protocol::GamePhase gamePhase {opm::protocol::GamePhase::PreGame};
+    std::uint32_t countdownTicks {0};
+    std::uint16_t winnerSlot {0xFFFFU};
+
     // LevelCreator state.
     LevelEditor editor {};
 

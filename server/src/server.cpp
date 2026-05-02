@@ -534,13 +534,16 @@ std::uint16_t Server::firstPlayerAtGoal() const
 void Server::enterPreGame()
 {
     gamePhase_ = opm::protocol::GamePhase::PreGame;
-    countdownTicks_ = kPreGameCountdownTicks;
+    // Countdown is paused (0) until the first vote arrives. handleMapVoteRequest
+    // bumps it to kVoteStartCountdownTicks on first vote and clamps to
+    // kAllVotedCountdownTicks once every active player has voted.
+    countdownTicks_ = 0;
     winnerSlot_ = kNoWinnerSlot;
     mapVotes_.clear();
     // Refresh the available-levels list so the vote screen reflects what
     // the storage actually holds right now.
     availableLevels_ = levelStorage_.listNames();
-    std::cout << "[server] phase -> PreGame (countdown " << kPreGameCountdownTicks << " ticks)\n";
+    std::cout << "[server] phase -> PreGame (waiting for votes)\n";
 }
 
 void Server::enterPlaying()
@@ -769,6 +772,37 @@ bool Server::handleMapVoteRequest(ClientConnection& conn, std::span<const std::u
     } else {
         mapVotes_[session.playerIndex] = levelName;
     }
+
+    // Drive the PreGame countdown off the vote state.
+    if (gamePhase_ == opm::protocol::GamePhase::PreGame) {
+        std::size_t activeCount = 0;
+        for (const auto& p : simulation_.state().players) {
+            if (p.active) {
+                activeCount += 1;
+            }
+        }
+        std::size_t nonEmptyVotes = 0;
+        for (const auto& [s, n] : mapVotes_) {
+            if (!n.empty()) {
+                nonEmptyVotes += 1;
+            }
+        }
+        // First vote of the round starts the timer at 60s.
+        if (nonEmptyVotes >= 1U && countdownTicks_ == 0U) {
+            countdownTicks_ = kVoteStartCountdownTicks;
+            std::cout << "[server] vote received -> countdown started (" << kVoteStartCountdownTicks << " ticks)\n";
+        }
+        // Once everyone has voted, snap the remaining time down to 15s
+        // (but never extend it).
+        if (activeCount > 0U && nonEmptyVotes >= activeCount) {
+            if (countdownTicks_ == 0U || countdownTicks_ > kAllVotedCountdownTicks) {
+                countdownTicks_ = kAllVotedCountdownTicks;
+                std::cout << "[server] all " << activeCount << " players voted -> countdown -> "
+                          << kAllVotedCountdownTicks << " ticks\n";
+            }
+        }
+    }
+
     broadcastMapVoteUpdate();
     return true;
 }

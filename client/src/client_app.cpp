@@ -260,7 +260,11 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             std::string discardStatus;
             opm::client::net::StateUpdate discard;
             while (gNetwork.session->pollStateUpdate(0U, discard, discardStatus)) {
-                // Discard — gameplay hasn't started.
+                // Mirror the phase tail into GameSession so the lobby
+                // UI can render the countdown / winner overlay.
+                session.gamePhase = discard.phase;
+                session.countdownTicks = discard.countdownTicks;
+                session.winnerSlot = discard.winnerSlot;
             }
             std::vector<opm::client::net::LevelSnapshot> snaps;
             gNetwork.session->drainLevelSnapshots(snaps);

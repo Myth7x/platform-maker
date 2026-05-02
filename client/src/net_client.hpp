@@ -75,6 +75,10 @@ struct StateUpdate {
     std::uint32_t serverTick {0};
     std::vector<RemotePlayerState> players {};
     std::vector<RemoteActorState> actors {};
+    // Mirrored from protocol::StateUpdateData tail.
+    opm::protocol::GamePhase phase {opm::protocol::GamePhase::PreGame};
+    std::uint32_t countdownTicks {0};
+    std::uint16_t winnerSlot {0xFFFFU};
 };
 
 class SessionClient {

@@ -9,6 +9,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 
@@ -63,13 +64,14 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
     auto& session = *session_;
 
     ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(
-        ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5F, vp->WorkPos.y + vp->WorkSize.y * 0.5F),
-        ImGuiCond_Always, ImVec2(0.5F, 0.5F));
-    ImGui::SetNextWindowSize(ImVec2(560.0F, 0.0F));
+    // Lobby is fullscreen — fills the framebuffer so the screen is
+    // entirely the vote / player UI, no GL viewport visible behind.
+    ImGui::SetNextWindowPos(vp->WorkPos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(vp->WorkSize, ImGuiCond_Always);
     ImGui::Begin("Lobby", nullptr,
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar);
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoBringToFrontOnFocus);
 
     // Determine voting mode: more than one connected player → cooperative
     // map vote; otherwise single-player can pick directly.
@@ -96,6 +98,39 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
     ImGui::TextDisabled(votingMode
         ? "  -  multiplayer mode (vote to pick the next level)"
         : "  -  single player (pick a level to start)");
+
+    ImGui::Spacing();
+
+    // ===== Countdown banner =====
+    // The server starts a 60s countdown the moment the first player
+    // votes; clamps to 15s once everyone has voted. countdownTicks==0
+    // means "no one has voted yet" (waiting).
+    {
+        constexpr float kTicksPerSecond = 60.0F;
+        const float secondsRemaining = static_cast<float>(session.countdownTicks) / kTicksPerSecond;
+        const bool waiting = session.countdownTicks == 0;
+        const ImVec4 hot   (1.00F, 0.42F, 0.30F, 1.0F); // urgent red
+        const ImVec4 warn  (1.00F, 0.74F, 0.25F, 1.0F); // amber
+        const ImVec4 calm  (0.40F, 0.80F, 0.55F, 1.0F); // green
+        ImVec4 barColor = waiting ? dimText
+                       : (secondsRemaining <= 5.0F ? hot
+                       : (secondsRemaining <= 15.0F ? warn : calm));
+
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, barColor);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.13F, 0.16F, 0.22F, 1.0F));
+        const float barFraction = waiting
+            ? 0.0F
+            : std::min(1.0F, secondsRemaining / 60.0F); // bar fills relative to the 60s window
+        char overlay[64];
+        if (waiting) {
+            std::snprintf(overlay, sizeof(overlay), "Waiting for first vote...");
+        } else {
+            std::snprintf(overlay, sizeof(overlay),
+                "Round starts in %.0fs", std::ceil(secondsRemaining));
+        }
+        ImGui::ProgressBar(barFraction, ImVec2(-1.0F, 28.0F), overlay);
+        ImGui::PopStyleColor(2);
+    }
 
     ImGui::Spacing();
 

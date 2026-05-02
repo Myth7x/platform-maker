@@ -21,9 +21,12 @@ namespace opm::server {
 inline constexpr std::uint32_t kTickRateHz = 60U;
 
 // Game-phase timing constants. Tunable from one place.
-inline constexpr std::uint32_t kPreGameCountdownTicks  = kTickRateHz * 5U;  // 5 seconds before game starts
-inline constexpr std::uint32_t kGameOverDisplayTicks   = kTickRateHz * 6U;  // 6 seconds of winner display before reset
-inline constexpr std::uint16_t kNoWinnerSlot           = 0xFFFFU;
+// Voting countdown: starts at 60s when the first vote is cast; clamps
+// down to 15s once every active player has voted.
+inline constexpr std::uint32_t kVoteStartCountdownTicks = kTickRateHz * 60U;
+inline constexpr std::uint32_t kAllVotedCountdownTicks  = kTickRateHz * 15U;
+inline constexpr std::uint32_t kGameOverDisplayTicks    = kTickRateHz * 6U;  // winner display
+inline constexpr std::uint16_t kNoWinnerSlot            = 0xFFFFU;
 
 // Top-level orchestrator. Owns the listen socket, lobbies, connection table,
 // engine simulation and the per-tick pacer. Drives the fixed-rate tick loop
