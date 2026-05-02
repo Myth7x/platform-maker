@@ -2,6 +2,14 @@
 
 #ifdef OPM_CLIENT_WITH_OPENGL_STUB
 
+// GLFW pulls in the Win32 SDK that defines WINGDIAPI / APIENTRY before
+// <GL/gl.h> needs them. Including gl.h directly without it on MSVC
+// blows up with "redefinition" / "missing type specifier" errors.
+#ifdef OPM_CLIENT_WITH_VULKAN
+#define GLFW_INCLUDE_VULKAN
+#endif
+#include <GLFW/glfw3.h>
+
 #include <GL/gl.h>
 
 #include <algorithm>
