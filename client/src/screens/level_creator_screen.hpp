@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace opm::client {
 
@@ -36,6 +37,12 @@ public:
         // dirty marker + status message). Width/height clamped by the
         // implementation.
         std::function<void(int width, int height)> onResize;
+
+        // Rebuild the active editor layer's draw entries from its
+        // current tile indices. Called after every paint/erase/rotate
+        // that mutates a tile-layer cell so the next render picks up
+        // the change.
+        std::function<void()> onRebuildActiveLayer;
     };
 
     LevelCreatorScreen(opm::client::game::GameSession& session, Callbacks callbacks);
@@ -46,6 +53,12 @@ public:
     void renderUI(ScreenContext& ctx) override;
 
 private:
+    // Local helpers (former runWindow lambdas) — only operate on
+    // session.editor, no orchestrator state required.
+    opm::engine::TileLayer& layerByEnum(opm::client::game::EditorLayer which);
+    std::vector<opm::client::render::TileDrawEntry>& layerEntriesByEnum(
+        opm::client::game::EditorLayer which);
+
     opm::client::game::GameSession* session_;
     Callbacks callbacks_;
 };

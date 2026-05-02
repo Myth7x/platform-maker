@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <optional>
 
+struct GLFWwindow;
+
 namespace opm::client {
 
 class ClientApp;
@@ -38,6 +40,7 @@ struct ScreenContext {
     render::AssetRegistry& assets;
     net::SessionClient*    session;        // shorthand for net->session.get()
     game::NetworkSessionContext* net {nullptr};
+    GLFWwindow*            window {nullptr};
     int                    framebufferWidth {0};
     int                    framebufferHeight {0};
     float                  animationTime {0.0F};
