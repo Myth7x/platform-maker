@@ -266,6 +266,13 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
                 session.countdownTicks = discard.countdownTicks;
                 session.winnerSlot = discard.winnerSlot;
             }
+            // If the server transitioned us into Playing while we're
+            // still on the lobby screen, auto-jump into the gameplay
+            // screen using the latest snapshot the server pushed.
+            if (session.gamePhase == opm::protocol::GamePhase::Playing
+                && session.state == AppState::OnlineLevelSelect) {
+                enterPlaying(true, gNetwork.networkLevel);
+            }
             std::vector<opm::client::net::LevelSnapshot> snaps;
             gNetwork.session->drainLevelSnapshots(snaps);
             for (auto& s : snaps) {
