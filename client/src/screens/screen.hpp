@@ -28,11 +28,15 @@ struct ScreenTransition {
 
 // Bundle of services every screen needs. Lifetime owned by ClientApp;
 // passed by reference into Screen virtuals every frame.
+//
+// `session` may be null when the app hasn't connected to a server yet
+// (e.g. on MainMenu before the first connect attempt) — screens that
+// need it must check.
 struct ScreenContext {
-    ClientApp&             app;
+    ClientApp*             app;     // null until ClientApp owns the runWindow body
     render::RenderContext& render;
     render::AssetRegistry& assets;
-    net::SessionClient&    session;
+    net::SessionClient*    session;
 };
 
 // Base interface for one of the five top-level UI screens

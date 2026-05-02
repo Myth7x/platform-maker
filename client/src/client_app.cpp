@@ -3,6 +3,7 @@
 #include "game/actor_manager.hpp"
 #include "game/game_session.hpp"
 #include "game/level_editor.hpp"
+#include "screens/main_menu_screen.hpp"
 #include "net_client.hpp"
 #include "render/asset_registry.hpp"
 #include "render/render_context.hpp"
@@ -486,6 +487,43 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
         layerEntriesByEnum(session.editor.activeLayer) =
             opm::client::render::buildTileLayerDrawEntries(manifest, layer, kPixelsPerTile);
     };
+
+    // Per-screen handlers. MainMenuScreen is the first one carved out
+    // of runWindow's monolithic ImGui block (Step 4 cont.). The others
+    // still live as inline branches below until they're migrated.
+    MainMenuScreen mainMenu(session, MainMenuScreen::Callbacks {
+        .onEnterLevelPicker = [&](const std::string& host, std::uint16_t port,
+                                  GameSession::PickerIntent intent) {
+            return enterLevelPicker(host, port, intent);
+        },
+        .onPlayQuickOffline = [&]() {
+            gNetwork.connected = false;
+            gNetwork.localPlayerIndex = kInvalidServerIndex;
+            gNetwork.actors.resetLocalOnly();
+            enterPlaying(false, fallbackLevel);
+        },
+        .onPlayOnline = [&](const std::string& host, std::uint16_t port) -> std::string {
+            const auto result = tryLobbyFlow(host, port);
+            if (!result.ok) {
+                return result.message;
+            }
+            std::string status;
+            session.onlineLevels.clear();
+            session.onlineLevelSelected = -1;
+            session.onlineLevelStatus.clear();
+            if (gNetwork.session) {
+                (void)gNetwork.session->requestLevelList(2000U, session.onlineLevels, status);
+            }
+            session.state = AppState::OnlineLevelSelect;
+            return {};
+        },
+        .onEnterLevelCreator = [&]() {
+            enterLevelCreator();
+        },
+        .onQuit = [&]() {
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
+        },
+    });
 
     bool jumpHeldLast = false;
     double previousTime = glfwGetTime();
@@ -1344,91 +1382,8 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
         // ---- Menu / picker / creator UI ----
 #ifdef OPM_CLIENT_HAS_IMGUI
         if (session.state == AppState::MainMenu) {
-            ImGuiViewport* vp = ImGui::GetMainViewport();
-            ImGui::SetNextWindowPos(
-                ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5F, vp->WorkPos.y + vp->WorkSize.y * 0.5F),
-                ImGuiCond_Always, ImVec2(0.5F, 0.5F));
-            ImGui::SetNextWindowSize(ImVec2(460.0F, 0.0F));
-            ImGui::Begin("Open Platformer Maker", nullptr,
-                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
-
-            // Server address is hardcoded to the default; field hidden from menu.
-
-            const auto resolveHostPort = [&](std::string& host, std::uint16_t& port) -> bool {
-                if (!parseAddress(session.addressInput, host, port)) {
-                    session.menuStatus = "Invalid address. Use host:port (e.g. 127.0.0.1:34900).";
-                    return false;
-                }
-                return true;
-            };
-
-            if (ImGui::Button("Play Offline (browse server levels)", ImVec2(-1.0F, 36.0F))) {
-                std::string host;
-                std::uint16_t port = 0;
-                if (resolveHostPort(host, port)) {
-                    const auto err = enterLevelPicker(host, port,
-                        GameSession::PickerIntent::PlayOffline);
-                    session.menuStatus = err;
-                }
-            }
-
-            if (ImGui::Button("Quick Offline (built-in level)", ImVec2(-1.0F, 28.0F))) {
-                gNetwork.connected = false;
-                gNetwork.localPlayerIndex = kInvalidServerIndex;
-                gNetwork.actors.resetLocalOnly();
-                enterPlaying(false, fallbackLevel);
-                session.menuStatus.clear();
-            }
-
-            if (ImGui::Button("Play Online", ImVec2(-1.0F, 36.0F))) {
-                std::string host;
-                std::uint16_t port = 0;
-                if (resolveHostPort(host, port)) {
-                    const auto result = tryLobbyFlow(host, port);
-                    if (result.ok) {
-                        // Fetch the level catalogue right away so the user can
-                        // pick which level the lobby should run.
-                        std::string status;
-                        session.onlineLevels.clear();
-                        session.onlineLevelSelected = -1;
-                        session.onlineLevelStatus.clear();
-                        if (gNetwork.session) {
-                            (void)gNetwork.session->requestLevelList(2000U, session.onlineLevels, status);
-                        }
-                        session.state = AppState::OnlineLevelSelect;
-                        session.menuStatus.clear();
-                    } else {
-                        session.menuStatus = result.message;
-                    }
-                }
-            }
-
-            if (ImGui::Button("Create Level", ImVec2(-1.0F, 36.0F))) {
-                enterLevelCreator();
-                session.menuStatus.clear();
-            }
-            if (ImGui::Button("Edit Server Level", ImVec2(-1.0F, 36.0F))) {
-                std::string host;
-                std::uint16_t port = 0;
-                if (resolveHostPort(host, port)) {
-                    const auto err = enterLevelPicker(host, port,
-                        GameSession::PickerIntent::EditOnServer);
-                    session.menuStatus = err;
-                }
-            }
-
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-            if (ImGui::Button("Quit", ImVec2(-1.0F, 28.0F))) {
-                glfwSetWindowShouldClose(window, GLFW_TRUE);
-            }
-
-            if (!session.menuStatus.empty()) {
-                ImGui::Spacing();
-                ImGui::TextColored(ImVec4(1.0F, 0.55F, 0.45F, 1.0F), "%s", session.menuStatus.c_str());
-            }
-            ImGui::End();
+            ScreenContext screenCtx { nullptr, renderCtx, assets, gNetwork.session.get() };
+            mainMenu.renderUI(screenCtx);
         } else if (session.state == AppState::LevelPicker) {
             const bool isEditIntent =
                 session.pickerIntent == GameSession::PickerIntent::EditOnServer;
