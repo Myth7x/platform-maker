@@ -17,9 +17,9 @@ struct ClientArgs {
 
 // Top-level orchestrator. Mirrors the server's `Server` class: owns the
 // long-lived subsystems, drives the main loop, and dispatches per-screen
-// work. Currently a thin wrapper around the legacy runWindow body; the
-// per-screen carve-out (Step 4 cont.) will move work out into Screen
-// classes invoked through ScreenStack.
+// work via ScreenStack. runWindow is the platform-specific entry that
+// owns GLFW/ImGui setup, the per-frame loop, and the per-state render /
+// input branches that haven't yet migrated into Screen subclasses.
 class ClientApp {
 public:
     int run();

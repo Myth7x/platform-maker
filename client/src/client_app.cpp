@@ -336,6 +336,8 @@ void drawPSpeedHud(const float meterValue, const bool pSpeedActive, const int fr
 
 #endif
 
+} // namespace
+
 #if defined(OPM_CLIENT_WITH_OPENGL_STUB) || defined(OPM_CLIENT_WITH_VULKAN)
 
 using opm::client::game::AppState;
@@ -345,8 +347,8 @@ using opm::client::game::LayeredEntries;
 using opm::client::game::LevelEditor;
 
 
-int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engine::LevelData& fallbackLevel,
-                    const opm::client::ClientArgs& clientArgs)
+int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::engine::LevelData& fallbackLevel,
+                    const ClientArgs& clientArgs)
 {
     RenderContext renderCtx(800, 600, "Open Platformer Maker");
     if (!renderCtx.ok()) {
@@ -1565,9 +1567,15 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
     // window, and GLFW in the right order.
     return 0;
 }
+#else
+int ClientApp::runWindow(const opm::assets::AssetManifest&,
+                         const opm::engine::LevelData&,
+                         const ClientArgs&)
+{
+    return 0;
+}
 #endif
 
-} // namespace
 
 int ClientApp::run()
 {
@@ -1591,25 +1599,5 @@ int ClientApp::run(const ClientArgs& args)
 #endif
 }
 
-#if defined(OPM_CLIENT_WITH_OPENGL_STUB) || defined(OPM_CLIENT_WITH_VULKAN)
-// Thin shim around the legacy runClientWindow body. As the per-screen
-// carve-out (Step 4 cont.) progresses, the implementation here will
-// become the real frame-loop orchestrator: poll input, tick the active
-// Screen, render, swap. For now it just delegates so the runtime path
-// is unchanged while the new ClientApp interface is exposed publicly.
-int ClientApp::runWindow(const opm::assets::AssetManifest& manifest,
-                         const opm::engine::LevelData& fallbackLevel,
-                         const ClientArgs& clientArgs)
-{
-    return runClientWindow(manifest, fallbackLevel, clientArgs);
-}
-#else
-int ClientApp::runWindow(const opm::assets::AssetManifest&,
-                         const opm::engine::LevelData&,
-                         const ClientArgs&)
-{
-    return 0;
-}
-#endif
 
 } // namespace opm::client
