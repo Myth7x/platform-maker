@@ -553,6 +553,8 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
                 .framebufferWidth = framebufferWidth, .framebufferHeight = framebufferHeight };
             levelCreator.render(screenCtx);
         }
+#endif
+
         // ---- Menu / picker / creator UI ----
 #ifdef OPM_CLIENT_HAS_IMGUI
         if (session.state == AppState::MainMenu) {
