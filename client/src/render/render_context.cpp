@@ -15,6 +15,8 @@
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl2.h>
+
+#include "render/theme.hpp"
 #endif
 
 #include <iostream>
@@ -55,7 +57,7 @@ RenderContext::RenderContext(int width, int height, const char* title)
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     (void)io;
-    ImGui::StyleColorsDark();
+    applyTheme(kDefaultTheme);
     ImGui_ImplGlfw_InitForOpenGL(window_, true);
     ImGui_ImplOpenGL2_Init();
     imguiInitialized_ = true;

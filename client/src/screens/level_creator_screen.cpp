@@ -740,6 +740,20 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
         ImGui::TextColored(layerColor, "[%s]", layerLabel);
         ImGui::Separator();
 
+        // Collision-mask inspector toggle. Hidden by default; pops the
+        // separate inspector panel open to the left of this sidebar.
+        {
+            const ImVec4 onCol(0.85F, 0.55F, 0.20F, 1.0F);
+            const char* label = session.editor.collisionInspectorOpen
+                ? "Collision \xE2\x9C\x95"   // "Collision ✕" (close)
+                : "Collision \xE2\x80\xA6";  // "Collision …" (open)
+            if (toggleButton(label, session.editor.collisionInspectorOpen,
+                             onCol, -1.0F, 26.0F)) {
+                session.editor.collisionInspectorOpen = !session.editor.collisionInspectorOpen;
+            }
+        }
+        ImGui::Spacing();
+
         const bool eraserSelected = session.editor.selectedTile == 0U
             && !session.editor.placingSpawn && !session.editor.placingGoal;
         ImGui::PushStyleColor(ImGuiCol_Button,
@@ -810,7 +824,8 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
         session.editor.activeLayer == EditorLayer::Background
         || session.editor.activeLayer == EditorLayer::Foliage
         || session.editor.activeLayer == EditorLayer::Foreground;
-    const bool inspectorOpen = tileLayerActive
+    const bool inspectorOpen = session.editor.collisionInspectorOpen
+        && tileLayerActive
         && session.editor.selectedTile != 0U
         && !session.editor.placingSpawn
         && !session.editor.placingGoal;

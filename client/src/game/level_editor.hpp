@@ -65,6 +65,10 @@ struct LevelEditor {
     // each frame from ImGui's actual window size, so resize sticks.
     float leftSidebarWidth {200.0F};
     float rightSidebarWidth {260.0F};
+
+    // Collision-mask inspector is hidden by default; user opens it
+    // via a button in the tile-palette sidebar.
+    bool collisionInspectorOpen {false};
 };
 
 } // namespace opm::client::game
