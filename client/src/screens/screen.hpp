@@ -9,7 +9,7 @@ class ClientApp;
 
 namespace render { class RenderContext; class AssetRegistry; }
 namespace net    { class SessionClient; }
-namespace game   { class ActorManager; struct LevelEditor; }
+namespace game   { class ActorManager; struct LevelEditor; struct NetworkSessionContext; }
 
 enum class ScreenId : std::uint8_t {
     MainMenu,
@@ -33,12 +33,14 @@ struct ScreenTransition {
 // (e.g. on MainMenu before the first connect attempt) — screens that
 // need it must check.
 struct ScreenContext {
-    ClientApp*             app;     // null until ClientApp owns the runWindow body
+    ClientApp*             app;     // may be null in early bring-up paths
     render::RenderContext& render;
     render::AssetRegistry& assets;
-    net::SessionClient*    session;
+    net::SessionClient*    session;        // shorthand for net->session.get()
+    game::NetworkSessionContext* net {nullptr};
     int                    framebufferWidth {0};
     int                    framebufferHeight {0};
+    float                  animationTime {0.0F};
 };
 
 // Base interface for one of the five top-level UI screens

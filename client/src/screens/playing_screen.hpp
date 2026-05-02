@@ -3,17 +3,13 @@
 #include "game/game_session.hpp"
 #include "screens/screen.hpp"
 
+#include <string>
+
 namespace opm::client {
 
 // Active gameplay — either offline (local Simulation step) or online
-// (StateUpdate polled from the server). Renders the level, players,
-// actors, and the P-speed HUD.
-//
-// Carve-out is partial: only the Test Play HUD ("Back to Editor"
-// button shown when fromEditor) lives here. The gameplay tick + render
-// + input branches still live inline in runWindow because they're
-// woven through the fixed-step / animation / camera-tracking machinery
-// that the orchestrator owns.
+// (StateUpdate polled from the server). Owns the camera tracking and
+// world rendering for the Playing state, plus the Test Play HUD.
 class PlayingScreen final : public Screen {
 public:
     explicit PlayingScreen(opm::client::game::GameSession& session);
@@ -24,6 +20,11 @@ public:
     void renderUI(ScreenContext& ctx) override;
 
 private:
+    // Maps a tile asset id to a stable pseudo-random pastel color, used
+    // when the asset has no texture loaded (so missing tiles still
+    // appear distinguishable from each other).
+    static void colorForAsset(const std::string& assetId, float& r, float& g, float& b);
+
     opm::client::game::GameSession* session_;
 };
 
