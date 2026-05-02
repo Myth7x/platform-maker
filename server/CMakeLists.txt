@@ -7,6 +7,7 @@ add_executable(opm_server
 	src/net/client_connection.cpp
 	src/game/lobby.cpp
 	src/game/lobby_manager.cpp
+	src/game/level_storage.cpp
 	src/runtime/scoped_timer_resolution.cpp
 	src/runtime/tick_pacer.cpp
 )

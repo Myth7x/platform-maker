@@ -1,6 +1,7 @@
 #include "opm/level.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 
 namespace opm::engine {
@@ -86,9 +87,7 @@ void addStair(TileLayer& layer, const std::uint32_t startX, const std::uint32_t 
 LevelData createBasicLevel(const std::uint32_t width, const std::uint32_t height)
 {
     LevelData level;
-    level.groundLayer.width = width;
-    level.groundLayer.height = height;
-    level.groundLayer.tileIndices.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height), 0U);
+    resizeAllLayers(level, width, height);
 
     if (width == 0U || height == 0U) {
         return level;
@@ -131,32 +130,80 @@ LevelData createBasicLevel(const std::uint32_t width, const std::uint32_t height
             topTile = kGroundTopRight;
         }
 
-        fillGroundColumn(level.groundLayer, x, groundY, topTile, kGroundFill);
+        fillGroundColumn(level.foliage, x, groundY, topTile, kGroundFill);
     }
 
     // Floating platforms with proper edge/mid tiles.
-    addFlatPlatform(level.groundLayer, 20U, 26U, groundY + 4U);
-    addFlatPlatform(level.groundLayer, 35U, 38U, groundY + 4U);
+    addFlatPlatform(level.foliage, 20U, 26U, groundY + 4U);
+    addFlatPlatform(level.foliage, 35U, 38U, groundY + 4U);
 
     // Pipes.
-    addPipe(level.groundLayer, 45U, groundY + 3U, 3U);
-    addPipe(level.groundLayer, 67U, groundY + 4U, 4U);
-    addPipe(level.groundLayer, 83U, groundY + 5U, 5U);
-    addPipe(level.groundLayer, 118U, groundY + 4U, 4U);
+    addPipe(level.foliage, 45U, groundY + 3U, 3U);
+    addPipe(level.foliage, 67U, groundY + 4U, 4U);
+    addPipe(level.foliage, 83U, groundY + 5U, 5U);
+    addPipe(level.foliage, 118U, groundY + 4U, 4U);
 
     // Mid-course platforming blocks.
-    addFlatPlatform(level.groundLayer, 110U, 115U, groundY + 6U);
-    addFlatPlatform(level.groundLayer, 126U, 129U, groundY + 5U);
+    addFlatPlatform(level.foliage, 110U, 115U, groundY + 6U);
+    addFlatPlatform(level.foliage, 126U, 129U, groundY + 5U);
 
     // End stairs + flag approach.
-    addStair(level.groundLayer, 186U, groundY + 1U, 7U);
-    addStair(level.groundLayer, 198U, groundY + 1U, 4U);
+    addStair(level.foliage, 186U, groundY + 1U, 7U);
+    addStair(level.foliage, 198U, groundY + 1U, 4U);
 
     level.spawnX = 3.0F;
     level.spawnY = static_cast<float>(groundY + 1U);
     level.goalX = static_cast<float>(width > 8U ? width - 8U : width - 1U);
     level.goalY = static_cast<float>(groundY + 8U);
     return level;
+}
+
+void resizeAllLayers(LevelData& level, std::uint32_t width, std::uint32_t height)
+{
+    auto resizeLayer = [&](TileLayer& layer) {
+        std::vector<std::uint16_t> previous = std::move(layer.tileIndices);
+        const std::uint32_t prevW = layer.width;
+        const std::uint32_t prevH = layer.height;
+        layer.width = width;
+        layer.height = height;
+        layer.tileIndices.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height), 0U);
+        const std::uint32_t copyW = std::min(prevW, width);
+        const std::uint32_t copyH = std::min(prevH, height);
+        for (std::uint32_t y = 0; y < copyH; ++y) {
+            for (std::uint32_t x = 0; x < copyW; ++x) {
+                const auto srcIdx = static_cast<std::size_t>(y) * prevW + x;
+                const auto dstIdx = static_cast<std::size_t>(y) * width + x;
+                if (srcIdx < previous.size() && dstIdx < layer.tileIndices.size()) {
+                    layer.tileIndices[dstIdx] = previous[srcIdx];
+                }
+            }
+        }
+    };
+    resizeLayer(level.background);
+    resizeLayer(level.foliage);
+    resizeLayer(level.foreground);
+}
+
+SpawnSafeZone computeSpawnSafeZone(const LevelData& level) noexcept
+{
+    // Snap to the spawn tile center so the zone is grid-aligned regardless
+    // of any sub-tile drift in spawnX/Y.
+    const float cx = std::floor(level.spawnX) + 0.5F;
+    const float cy = std::floor(level.spawnY) + 0.5F;
+    SpawnSafeZone z;
+    z.minX = cx - kSpawnSafeZoneHalfTiles;
+    z.minY = cy - kSpawnSafeZoneHalfTiles;
+    z.maxX = cx + kSpawnSafeZoneHalfTiles;
+    z.maxY = cy + kSpawnSafeZoneHalfTiles;
+    return z;
+}
+
+bool aabbOverlapsSpawnSafeZone(const LevelData& level,
+    const float x, const float y, const float w, const float h) noexcept
+{
+    const SpawnSafeZone z = computeSpawnSafeZone(level);
+    return (x + w) > z.minX && x < z.maxX
+        && (y + h) > z.minY && y < z.maxY;
 }
 
 } // namespace opm::engine

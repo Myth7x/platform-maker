@@ -1,4 +1,5 @@
 #pragma once
+#include "game/level_storage.hpp"
 #include "game/lobby_manager.hpp"
 #include "net/connection_table.hpp"
 #include "net/scoped_socket.hpp"
@@ -22,7 +23,7 @@ inline constexpr std::uint32_t kTickRateHz = 60U;
 // and dispatches incoming protocol messages.
 class Server {
 public:
-    explicit Server(std::uint16_t port) noexcept;
+    explicit Server(std::uint16_t port);
 
     int run();
 
@@ -50,6 +51,12 @@ private:
     [[nodiscard]] bool handleLobbyJoinRequest(ClientConnection& conn, std::span<const std::uint8_t> payload);
     [[nodiscard]] bool handleMovementInput(ClientConnection& conn, std::span<const std::uint8_t> payload);
     [[nodiscard]] bool handlePing(ClientConnection& conn, std::span<const std::uint8_t> payload);
+    [[nodiscard]] bool handleLevelListRequest(ClientConnection& conn);
+    [[nodiscard]] bool handleLevelLoadRequest(ClientConnection& conn, std::span<const std::uint8_t> payload);
+    [[nodiscard]] bool handleLevelSaveRequest(ClientConnection& conn, std::span<const std::uint8_t> payload);
+    [[nodiscard]] bool handleLobbySetLevelRequest(ClientConnection& conn, std::span<const std::uint8_t> payload);
+
+    void broadcastLevelSnapshotToLobby(const Lobby& lobby);
 
     [[nodiscard]] bool sendJoinResponse(ClientConnection& conn, const opm::protocol::LobbyJoinResponseData& response);
     [[nodiscard]] bool sendLevelSnapshot(ClientConnection& conn);
@@ -60,8 +67,9 @@ private:
     ScopedSocket listenSocket_;
     LobbyManager lobbies_;
     ConnectionTable connections_;
+    LevelStorage levelStorage_;
     opm::engine::Simulation simulation_;
-    std::array<opm::engine::InputFrame, 2> pendingInputs_ {};
+    std::vector<opm::engine::InputFrame> pendingInputs_ {};
 
     // Reusable per-tick scratch — hoisted to avoid reallocating each tick.
     std::array<std::uint8_t, kRecvChunkSize> recvChunk_ {};

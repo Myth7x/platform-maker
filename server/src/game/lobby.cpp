@@ -1,16 +1,20 @@
 #include "game/lobby.hpp"
 
-#include <string_view>
+#include <string>
 #include <utility>
 
 namespace opm::server {
 
-std::optional<std::uint8_t> Lobby::tryAssignSlot(socket_t fd) noexcept
+std::optional<std::uint16_t> Lobby::tryAssignSlot(socket_t fd) noexcept
 {
+    if (slots.size() != static_cast<std::size_t>(capacity)) {
+        slots.resize(static_cast<std::size_t>(capacity), kInvalidSocket);
+    }
+
     for (std::size_t i = 0; i < slots.size(); ++i) {
         if (slots[i] == kInvalidSocket) {
             slots[i] = fd;
-            return static_cast<std::uint8_t>(i);
+            return static_cast<std::uint16_t>(i);
         }
     }
     return std::nullopt;
@@ -41,21 +45,16 @@ std::uint32_t Lobby::playerCount() const noexcept
 
 std::vector<opm::protocol::PlayerInfo> Lobby::roster() const
 {
-    static constexpr std::array<std::string_view, 2> names {"Player 1", "Player 2"};
-    static constexpr std::array<std::array<std::uint8_t, 3>, 2> colors {{
-        {224U, 60U, 60U},
-        {70U, 190U, 80U},
-    }};
     std::vector<opm::protocol::PlayerInfo> out;
     out.reserve(slots.size());
     for (std::size_t i = 0; i < slots.size(); ++i) {
         opm::protocol::PlayerInfo info;
-        info.playerIndex = static_cast<std::uint8_t>(i);
+        info.playerIndex = static_cast<std::uint16_t>(i);
         info.connected = slots[i] != kInvalidSocket;
-        info.colorR = colors[i][0];
-        info.colorG = colors[i][1];
-        info.colorB = colors[i][2];
-        info.displayName = std::string(names[i]);
+        info.colorR = static_cast<std::uint8_t>((37U * static_cast<std::uint32_t>(i) + 64U) % 256U);
+        info.colorG = static_cast<std::uint8_t>((59U * static_cast<std::uint32_t>(i) + 96U) % 256U);
+        info.colorB = static_cast<std::uint8_t>((83U * static_cast<std::uint32_t>(i) + 128U) % 256U);
+        info.displayName = "Player " + std::to_string(i + 1U);
         out.push_back(std::move(info));
     }
     return out;

@@ -1,0 +1,46 @@
+{
+    "animations": {
+        "idle": {
+            "height_tiles": 1.0,
+            "fps": 0,
+            "left":  ["idle/left/0.png"],
+            "right": ["idle/right/0.png"]
+        },
+        "walk_normal": {
+            "height_tiles": 1.0,
+            "fps": 10,
+            "left":  ["movement/normal/left/0.png", "movement/normal/left/1.png"],
+            "right": ["movement/normal/right/0.png", "movement/normal/right/1.png"]
+        },
+        "walk_normal_turnaround": {
+            "height_tiles": 1.0,
+            "fps": 10,
+            "left":  ["movement/normal/turnaround/left/0.png"],
+            "right": ["movement/normal/turnaround/right/0.png"]
+        },
+        "air_normal": {
+            "height_tiles": 1.0,
+            "fps": 10,
+            "left":  ["movement/normal/air/left/0.png"],
+            "right": ["movement/normal/air/right/0.png"]
+        },
+        "walk_pspeed": {
+            "height_tiles": 1.0,
+            "fps": 14,
+            "left":  ["movement/pspeed/left/0.png", "movement/pspeed/left/1.png", "movement/pspeed/left/2.png"],
+            "right": ["movement/pspeed/right/0.png", "movement/pspeed/right/1.png", "movement/pspeed/right/2.png"]
+        },
+        "walk_pspeed_turnaround": {
+            "height_tiles": 1.0,
+            "fps": 14,
+            "left":  ["movement/pspeed/turnaround/left/0.png"],
+            "right": ["movement/pspeed/turnaround/right/0.png"]
+        },
+        "air_pspeed": {
+            "height_tiles": 1.0,
+            "fps": 14,
+            "left":  ["movement/pspeed/air/left/0.png"],
+            "right": ["movement/pspeed/air/right/0.png"]
+        }
+    }
+}

@@ -8,6 +8,7 @@
 #include <chrono>
 #include <csignal>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <utility>
 
@@ -19,7 +20,19 @@ void handleSignal(int) { gKeepRunning = 0; }
 
 } // namespace
 
-Server::Server(std::uint16_t port) noexcept : port_(port) {}
+Server::Server(std::uint16_t port)
+    : port_(port)
+    , levelStorage_(std::filesystem::current_path() / "levels")
+{
+    constexpr std::size_t kMaxLobbyPlayers = 500U;
+    simulation_.setPlayerCount(kMaxLobbyPlayers);
+    pendingInputs_.resize(kMaxLobbyPlayers);
+    // No connected players yet — deactivate every slot so unused slots don't
+    // pile up at the spawn AABB and block real players.
+    for (std::size_t i = 0; i < kMaxLobbyPlayers; ++i) {
+        simulation_.setPlayerActive(i, false);
+    }
+}
 
 int Server::run()
 {
@@ -182,6 +195,14 @@ bool Server::handleMessage(ClientConnection& conn,
             return handleMovementInput(conn, payload);
         case opm::protocol::MessageType::Ping:
             return handlePing(conn, payload);
+        case opm::protocol::MessageType::LevelListRequest:
+            return handleLevelListRequest(conn);
+        case opm::protocol::MessageType::LevelLoadRequest:
+            return handleLevelLoadRequest(conn, payload);
+        case opm::protocol::MessageType::LevelSaveRequest:
+            return handleLevelSaveRequest(conn, payload);
+        case opm::protocol::MessageType::LobbySetLevelRequest:
+            return handleLobbySetLevelRequest(conn, payload);
         default:
             return true;
     }
@@ -199,7 +220,15 @@ bool Server::handleLobbyJoinRequest(ClientConnection& conn, std::span<const std:
     scratchPayload_.assign(payload.begin(), payload.end());
     const auto requestedLobby = opm::protocol::decodeLobbyJoinRequestPayload(scratchPayload_);
 
-    // Cleanly leave any existing lobby.
+    // Cleanly leave any existing lobby. Also release the simulation slot so
+    // it stops participating in physics until the client lands in a new lobby.
+    {
+        const auto previousSlot = conn.session().playerIndex;
+        if (previousSlot != kInvalidPlayerSlot) {
+            simulation_.setPlayerActive(previousSlot, false);
+            pendingInputs_[previousSlot] = {};
+        }
+    }
     lobbies_.removeFromAll(conn.fd());
     conn.session() = {};
 
@@ -226,6 +255,9 @@ bool Server::handleLobbyJoinRequest(ClientConnection& conn, std::span<const std:
     response.reason = "joined";
     response.roster = lobby->roster();
     conn.session() = PeerSession {.lobbyName = lobby->name, .playerIndex = *assignedSlot};
+    // Activate the simulation slot at the level spawn so it participates in
+    // physics + player-vs-player collision.
+    simulation_.respawnPlayer(*assignedSlot);
 
     if (!sendJoinResponse(conn, response)) {
         return false;
@@ -251,6 +283,116 @@ bool Server::handlePing(ClientConnection& conn, std::span<const std::uint8_t> pa
 {
     scratchWire_.build(opm::protocol::MessageType::Pong, payload);
     return conn.send(scratchWire_.view());
+}
+
+bool Server::handleLevelListRequest(ClientConnection& conn)
+{
+    const auto names = levelStorage_.listNames();
+    const auto payloadBytes = opm::protocol::encodeLevelListResponsePayload(names);
+    scratchWire_.build(opm::protocol::MessageType::LevelListResponse, payloadBytes);
+    std::cout << "[server] level list -> fd=" << conn.fd() << " count=" << names.size() << "\n";
+    return conn.send(scratchWire_.view());
+}
+
+bool Server::handleLevelLoadRequest(ClientConnection& conn, std::span<const std::uint8_t> payload)
+{
+    scratchPayload_.assign(payload.begin(), payload.end());
+    const auto name = opm::protocol::decodeLevelLoadRequestPayload(scratchPayload_);
+
+    opm::protocol::LevelLoadResponseData response;
+    std::string err;
+    if (levelStorage_.load(name, response.level, err)) {
+        response.ok = true;
+        response.reason = "loaded";
+        std::cout << "[server] level loaded name=" << name
+                  << " size=" << response.level.foliage.width << "x" << response.level.foliage.height << "\n";
+    } else {
+        response.ok = false;
+        response.reason = err;
+        std::cout << "[server] level load failed name=" << name << " reason=" << err << "\n";
+    }
+    const auto payloadBytes = opm::protocol::encodeLevelLoadResponsePayload(response);
+    scratchWire_.build(opm::protocol::MessageType::LevelLoadResponse, payloadBytes);
+    return conn.send(scratchWire_.view());
+}
+
+bool Server::handleLevelSaveRequest(ClientConnection& conn, std::span<const std::uint8_t> payload)
+{
+    scratchPayload_.assign(payload.begin(), payload.end());
+    const auto request = opm::protocol::decodeLevelSaveRequestPayload(scratchPayload_);
+
+    opm::protocol::LevelSaveResponseData response;
+    std::string err;
+    if (levelStorage_.save(request.name, request.level, err)) {
+        response.ok = true;
+        response.reason = "saved";
+        std::cout << "[server] level saved name=" << request.name
+                  << " size=" << request.level.foliage.width << "x" << request.level.foliage.height << "\n";
+    } else {
+        response.ok = false;
+        response.reason = err;
+        std::cout << "[server] level save failed name=" << request.name << " reason=" << err << "\n";
+    }
+    const auto payloadBytes = opm::protocol::encodeLevelSaveResponsePayload(response);
+    scratchWire_.build(opm::protocol::MessageType::LevelSaveResponse, payloadBytes);
+    return conn.send(scratchWire_.view());
+}
+
+bool Server::handleLobbySetLevelRequest(ClientConnection& conn, std::span<const std::uint8_t> payload)
+{
+    scratchPayload_.assign(payload.begin(), payload.end());
+    const auto levelName = opm::protocol::decodeLobbySetLevelRequestPayload(scratchPayload_);
+
+    opm::protocol::LobbySetLevelResponseData response;
+
+    const auto& session = conn.session();
+    if (session.playerIndex == kInvalidPlayerSlot) {
+        response.ok = false;
+        response.reason = "not_in_lobby";
+        const auto bytes = opm::protocol::encodeLobbySetLevelResponsePayload(response);
+        scratchWire_.build(opm::protocol::MessageType::LobbySetLevelResponse, bytes);
+        return conn.send(scratchWire_.view());
+    }
+
+    opm::engine::LevelData level;
+    std::string err;
+    if (!levelStorage_.load(levelName, level, err)) {
+        response.ok = false;
+        response.reason = err;
+        const auto bytes = opm::protocol::encodeLobbySetLevelResponsePayload(response);
+        scratchWire_.build(opm::protocol::MessageType::LobbySetLevelResponse, bytes);
+        return conn.send(scratchWire_.view());
+    }
+
+    simulation_.setLevel(level);
+    std::cout << "[server] lobby '" << session.lobbyName << "' switched to level '" << levelName
+              << "' (" << level.foliage.width << "x" << level.foliage.height << ")\n";
+
+    response.ok = true;
+    response.reason = "level_set";
+    const auto bytes = opm::protocol::encodeLobbySetLevelResponsePayload(response);
+    scratchWire_.build(opm::protocol::MessageType::LobbySetLevelResponse, bytes);
+    if (!conn.send(scratchWire_.view())) {
+        return false;
+    }
+
+    Lobby* lobby = lobbies_.find(session.lobbyName);
+    if (lobby != nullptr) {
+        broadcastLevelSnapshotToLobby(*lobby);
+    }
+    return true;
+}
+
+void Server::broadcastLevelSnapshotToLobby(const Lobby& lobby)
+{
+    const auto payloadBytes = opm::protocol::encodeLevelSnapshotPayload(simulation_.level());
+    WireBuilder wire;
+    wire.build(opm::protocol::MessageType::LevelSnapshot, payloadBytes);
+    for (const auto fd : lobby.slots) {
+        if (fd != kInvalidSocket) {
+            (void)sendAll(fd, wire.view());
+        }
+    }
 }
 
 bool Server::sendJoinResponse(ClientConnection& conn, const opm::protocol::LobbyJoinResponseData& response)
@@ -284,6 +426,13 @@ void Server::tickProcessDrops()
 {
     for (const socket_t fd : toDrop_) {
         std::cout << "[server] client disconnected fd=" << fd << "\n";
+        if (auto* conn = connections_.find(fd); conn != nullptr) {
+            const auto slot = conn->session().playerIndex;
+            if (slot != kInvalidPlayerSlot) {
+                simulation_.setPlayerActive(slot, false);
+                pendingInputs_[slot] = {};
+            }
+        }
         const auto affected = lobbies_.removeFromAll(fd);
         connections_.remove(fd);
         closesocketCompat(fd);
@@ -309,9 +458,20 @@ void Server::tickBroadcastState()
     // Encode StateUpdate to wire bytes ONCE per tick, then broadcast raw.
     opm::protocol::StateUpdateData data;
     data.serverTick = simulation_.state().tick;
-    for (std::size_t i = 0; i < data.players.size(); ++i) {
-        const auto& s = simulation_.state().players[i];
-        data.players[i] = opm::protocol::PlayerNetState {
+    // Only broadcast active slots — the simulation has up to 500 slots and
+    // sending every empty one each tick (~14 KB at 60 Hz) easily fills the
+    // kernel send buffer of a freshly-joined client that's still loading
+    // assets, causing a sendAll timeout and a forced disconnect. Sparse
+    // encoding with an explicit slot index per record keeps this to ~30 B
+    // per active player.
+    const auto& players = simulation_.state().players;
+    for (std::size_t i = 0; i < players.size(); ++i) {
+        const auto& s = players[i];
+        if (!s.active) {
+            continue;
+        }
+        data.players.push_back(opm::protocol::PlayerNetState {
+            .slotIndex = static_cast<std::uint16_t>(i),
             .positionX = s.position.x,
             .positionY = s.position.y,
             .velocityX = s.velocity.x,
@@ -322,7 +482,24 @@ void Server::tickBroadcastState()
             .crouching = s.crouching,
             .pSpeedActive = s.pSpeedActive,
             .pSpeedMeter = s.pSpeedMeter,
-        };
+            .style = static_cast<std::uint8_t>(s.style),
+            .powerupTransitionFrames = s.powerupTransitionFrames,
+            .invincibilityFrames = s.invincibilityFrames,
+        });
+    }
+    data.actors.reserve(simulation_.state().actors.size());
+    for (const auto& a : simulation_.state().actors) {
+        data.actors.push_back(opm::protocol::ActorNetState {
+            .positionX = a.position.x,
+            .positionY = a.position.y,
+            .velocityX = a.velocity.x,
+            .velocityY = a.velocity.y,
+            .alive = a.alive,
+            .facingRight = a.facingRight,
+            .script = static_cast<std::uint8_t>(a.script),
+            .enemyKind = a.enemyKind,
+            .category = static_cast<std::uint8_t>(a.category),
+        });
     }
     const auto payload = opm::protocol::encodeStateUpdatePayload(data);
     broadcastWire_.build(opm::protocol::MessageType::StateUpdate, payload);

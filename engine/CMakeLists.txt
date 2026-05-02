@@ -3,6 +3,7 @@ add_library(opm_engine STATIC
 	src/protocol.cpp
 	src/assets.cpp
 	src/level.cpp
+	src/level_json.cpp
 	src/tile_metadata.cpp
 )
 

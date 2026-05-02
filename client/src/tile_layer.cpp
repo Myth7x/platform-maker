@@ -47,12 +47,13 @@ std::vector<TileDrawEntry> buildTileLayerDrawEntries(
                 continue;
             }
 
-            const auto sourceTileIndex = tileLayer.tileIndices[flatIndex];
-            if (sourceTileIndex == 0U) {
+            const auto cell = tileLayer.tileIndices[flatIndex];
+            const auto baseIndex = opm::engine::tileBaseIndex(cell);
+            if (baseIndex == 0U) {
                 continue;
             }
 
-            const auto it = tileIdMap.find(sourceTileIndex);
+            const auto it = tileIdMap.find(baseIndex);
             if (it == tileIdMap.end()) {
                 continue;
             }
@@ -64,6 +65,7 @@ std::vector<TileDrawEntry> buildTileLayerDrawEntries(
             entry.worldX = static_cast<float>(x) * tileSize;
             entry.worldY = static_cast<float>(y) * tileSize;
             entry.tileSize = tileSize;
+            entry.rotationSteps = opm::engine::tileRotationSteps(cell);
             entries.push_back(entry);
         }
     }

@@ -9,6 +9,7 @@ namespace opm::assets {
 struct AssetRecord {
     std::string id {};
     std::string category {};
+    std::string subCategory {}; // folder name within category (e.g. "set1", "set2")
     std::filesystem::path path {};
 };
 

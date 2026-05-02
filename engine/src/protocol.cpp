@@ -232,13 +232,13 @@ std::vector<std::uint8_t> encodeLobbyJoinResponsePayload(const LobbyJoinResponse
 {
     std::vector<std::uint8_t> out;
     writeBool(out, payload.accepted);
-    out.push_back(payload.playerIndex);
+    writeU16(out, payload.playerIndex);
     writeU32(out, payload.tickRateHz);
     writeString(out, payload.lobbyName);
     writeString(out, payload.reason);
     writeU32(out, static_cast<std::uint32_t>(payload.roster.size()));
     for (const auto& player : payload.roster) {
-        out.push_back(player.playerIndex);
+        writeU16(out, player.playerIndex);
         writeBool(out, player.connected);
         out.push_back(player.colorR);
         out.push_back(player.colorG);
@@ -253,7 +253,7 @@ LobbyJoinResponseData decodeLobbyJoinResponsePayload(const std::vector<std::uint
     PayloadReader reader(payload);
     LobbyJoinResponseData response;
     response.accepted = reader.readBool();
-    response.playerIndex = reader.readU8();
+    response.playerIndex = reader.readU16();
     response.tickRateHz = reader.readU32();
     response.lobbyName = reader.readString();
     response.reason = reader.readString();
@@ -261,7 +261,7 @@ LobbyJoinResponseData decodeLobbyJoinResponsePayload(const std::vector<std::uint
     response.roster.reserve(static_cast<std::size_t>(rosterCount));
     for (std::uint32_t i = 0; i < rosterCount; ++i) {
         PlayerInfo info;
-        info.playerIndex = reader.readU8();
+        info.playerIndex = reader.readU16();
         info.connected = reader.readBool();
         info.colorR = reader.readU8();
         info.colorG = reader.readU8();
@@ -275,19 +275,70 @@ LobbyJoinResponseData decodeLobbyJoinResponsePayload(const std::vector<std::uint
     return response;
 }
 
+namespace {
+
+void writeTileLayer(std::vector<std::uint8_t>& out, const opm::engine::TileLayer& layer)
+{
+    writeU32(out, static_cast<std::uint32_t>(layer.tileIndices.size()));
+    for (const auto tile : layer.tileIndices) {
+        writeU16(out, tile);
+    }
+}
+
+void readTileLayer(PayloadReader& reader, opm::engine::TileLayer& layer,
+    std::uint32_t width, std::uint32_t height)
+{
+    const auto tileCount = static_cast<std::size_t>(reader.readU32());
+    layer.width = width;
+    layer.height = height;
+    layer.tileIndices.clear();
+    layer.tileIndices.reserve(tileCount);
+    for (std::size_t i = 0; i < tileCount; ++i) {
+        layer.tileIndices.push_back(reader.readU16());
+    }
+}
+
+} // namespace
+
 std::vector<std::uint8_t> encodeLevelSnapshotPayload(const opm::engine::LevelData& level)
 {
     std::vector<std::uint8_t> out;
-    writeU32(out, level.groundLayer.width);
-    writeU32(out, level.groundLayer.height);
+    writeU32(out, level.foliage.width);
+    writeU32(out, level.foliage.height);
     writeF32(out, level.spawnX);
     writeF32(out, level.spawnY);
     writeF32(out, level.goalX);
     writeF32(out, level.goalY);
+    writeTileLayer(out, level.background);
+    writeTileLayer(out, level.foliage);
+    writeTileLayer(out, level.foreground);
+    writeU32(out, static_cast<std::uint32_t>(level.actors.size()));
+    for (const auto& actor : level.actors) {
+        writeF32(out, actor.x);
+        writeF32(out, actor.y);
+        out.push_back(static_cast<std::uint8_t>(actor.script));
+        std::uint8_t flags = 0U;
+        if (actor.diesWhenStomped)  flags |= 0x01U;
+        if (actor.canJumpObstacles) flags |= 0x02U;
+        if (actor.canJumpRandom)    flags |= 0x04U;
+        if (actor.canFly)           flags |= 0x08U;
+        out.push_back(flags);
+        out.push_back(actor.enemyKind);
+        out.push_back(static_cast<std::uint8_t>(actor.category));
+    }
 
-    writeU32(out, static_cast<std::uint32_t>(level.groundLayer.tileIndices.size()));
-    for (const auto tile : level.groundLayer.tileIndices) {
-        writeU16(out, tile);
+    // Per-tile collision overrides: u32 count, then for each entry
+    // u16 tileId + u8 flags { bit 0=top, 1=bottom, 2=left, 3=right, 4=oneWayTop }.
+    writeU32(out, static_cast<std::uint32_t>(level.tileCollisionOverrides.size()));
+    for (const auto& [tileId, mask] : level.tileCollisionOverrides) {
+        writeU16(out, tileId);
+        std::uint8_t maskBits = 0U;
+        if (mask.solidTop)    maskBits |= 0x01U;
+        if (mask.solidBottom) maskBits |= 0x02U;
+        if (mask.solidLeft)   maskBits |= 0x04U;
+        if (mask.solidRight)  maskBits |= 0x08U;
+        if (mask.oneWayTop)   maskBits |= 0x10U;
+        out.push_back(maskBits);
     }
     return out;
 }
@@ -296,17 +347,60 @@ opm::engine::LevelData decodeLevelSnapshotPayload(const std::vector<std::uint8_t
 {
     PayloadReader reader(payload);
     opm::engine::LevelData level;
-    level.groundLayer.width = reader.readU32();
-    level.groundLayer.height = reader.readU32();
+    const auto width = reader.readU32();
+    const auto height = reader.readU32();
     level.spawnX = reader.readF32();
     level.spawnY = reader.readF32();
     level.goalX = reader.readF32();
     level.goalY = reader.readF32();
+    readTileLayer(reader, level.background, width, height);
+    readTileLayer(reader, level.foliage,    width, height);
+    readTileLayer(reader, level.foreground, width, height);
 
-    const auto tileCount = static_cast<std::size_t>(reader.readU32());
-    level.groundLayer.tileIndices.reserve(tileCount);
-    for (std::size_t i = 0; i < tileCount; ++i) {
-        level.groundLayer.tileIndices.push_back(reader.readU16());
+    // Actors are optional for backward compatibility with snapshots that
+    // pre-date the actor layer.
+    if (!reader.done()) {
+        const auto actorCount = reader.readU32();
+        level.actors.reserve(static_cast<std::size_t>(actorCount));
+        for (std::uint32_t i = 0; i < actorCount; ++i) {
+            opm::engine::ActorSpawn a {};
+            a.x = reader.readF32();
+            a.y = reader.readF32();
+            a.script = static_cast<opm::engine::ActorScript>(reader.readU8());
+            // Flags byte is appended after script. For backward compat with
+            // pre-flags snapshots that only stored x/y/script, we only read
+            // it if there are still bytes left before the next actor.
+            if (!reader.done()) {
+                const std::uint8_t flags = reader.readU8();
+                a.diesWhenStomped  = (flags & 0x01U) != 0U;
+                a.canJumpObstacles = (flags & 0x02U) != 0U;
+                a.canJumpRandom    = (flags & 0x04U) != 0U;
+                a.canFly           = (flags & 0x08U) != 0U;
+            }
+            if (!reader.done()) {
+                a.enemyKind = reader.readU8();
+            }
+            if (!reader.done()) {
+                a.category = static_cast<opm::engine::ActorCategory>(reader.readU8());
+            }
+            level.actors.push_back(a);
+        }
+    }
+
+    // Tile collision overrides — optional trailing block for older payloads.
+    if (!reader.done()) {
+        const auto overrideCount = reader.readU32();
+        for (std::uint32_t i = 0; i < overrideCount; ++i) {
+            const auto tileId = reader.readU16();
+            const auto bits = reader.readU8();
+            opm::engine::TileCollisionMask mask {};
+            mask.solidTop    = (bits & 0x01U) != 0U;
+            mask.solidBottom = (bits & 0x02U) != 0U;
+            mask.solidLeft   = (bits & 0x04U) != 0U;
+            mask.solidRight  = (bits & 0x08U) != 0U;
+            mask.oneWayTop   = (bits & 0x10U) != 0U;
+            level.tileCollisionOverrides[tileId] = mask;
+        }
     }
 
     if (!reader.done()) {
@@ -368,7 +462,9 @@ std::vector<std::uint8_t> encodeStateUpdatePayload(const StateUpdateData& update
 {
     std::vector<std::uint8_t> out;
     writeU32(out, update.serverTick);
+    writeU32(out, static_cast<std::uint32_t>(update.players.size()));
     for (const auto& player : update.players) {
+        writeU16(out, player.slotIndex);
         writeF32(out, player.positionX);
         writeF32(out, player.positionY);
         writeF32(out, player.velocityX);
@@ -379,6 +475,21 @@ std::vector<std::uint8_t> encodeStateUpdatePayload(const StateUpdateData& update
         writeBool(out, player.crouching);
         writeBool(out, player.pSpeedActive);
         writeF32(out, player.pSpeedMeter);
+        out.push_back(player.style);
+        out.push_back(player.powerupTransitionFrames);
+        out.push_back(player.invincibilityFrames);
+    }
+    writeU32(out, static_cast<std::uint32_t>(update.actors.size()));
+    for (const auto& a : update.actors) {
+        writeF32(out, a.positionX);
+        writeF32(out, a.positionY);
+        writeF32(out, a.velocityX);
+        writeF32(out, a.velocityY);
+        writeBool(out, a.alive);
+        writeBool(out, a.facingRight);
+        out.push_back(a.script);
+        out.push_back(a.enemyKind);
+        out.push_back(a.category);
     }
     return out;
 }
@@ -388,7 +499,11 @@ StateUpdateData decodeStateUpdatePayload(const std::vector<std::uint8_t>& payloa
     PayloadReader reader(payload);
     StateUpdateData update;
     update.serverTick = reader.readU32();
-    for (auto& player : update.players) {
+    const auto playerCount = reader.readU32();
+    update.players.reserve(static_cast<std::size_t>(playerCount));
+    for (std::uint32_t i = 0; i < playerCount; ++i) {
+        PlayerNetState player;
+        player.slotIndex = reader.readU16();
         player.positionX = reader.readF32();
         player.positionY = reader.readF32();
         player.velocityX = reader.readF32();
@@ -399,6 +514,38 @@ StateUpdateData decodeStateUpdatePayload(const std::vector<std::uint8_t>& payloa
         player.crouching = reader.readBool();
         player.pSpeedActive = reader.readBool();
         player.pSpeedMeter = reader.readF32();
+        if (!reader.done()) {
+            player.style = reader.readU8();
+        }
+        if (!reader.done()) {
+            player.powerupTransitionFrames = reader.readU8();
+        }
+        if (!reader.done()) {
+            player.invincibilityFrames = reader.readU8();
+        }
+        update.players.push_back(player);
+    }
+
+    if (!reader.done()) {
+        const auto actorCount = reader.readU32();
+        update.actors.reserve(static_cast<std::size_t>(actorCount));
+        for (std::uint32_t i = 0; i < actorCount; ++i) {
+            ActorNetState a;
+            a.positionX = reader.readF32();
+            a.positionY = reader.readF32();
+            a.velocityX = reader.readF32();
+            a.velocityY = reader.readF32();
+            a.alive = reader.readBool();
+            a.facingRight = reader.readBool();
+            a.script = reader.readU8();
+            if (!reader.done()) {
+                a.enemyKind = reader.readU8();
+            }
+            if (!reader.done()) {
+                a.category = reader.readU8();
+            }
+            update.actors.push_back(a);
+        }
     }
 
     if (!reader.done()) {
@@ -413,7 +560,7 @@ std::vector<std::uint8_t> encodeRosterUpdatePayload(const std::vector<PlayerInfo
     std::vector<std::uint8_t> out;
     writeU32(out, static_cast<std::uint32_t>(roster.size()));
     for (const auto& info : roster) {
-        out.push_back(info.playerIndex);
+        writeU16(out, info.playerIndex);
         writeBool(out, info.connected);
         out.push_back(info.colorR);
         out.push_back(info.colorG);
@@ -431,7 +578,7 @@ std::vector<PlayerInfo> decodeRosterUpdatePayload(const std::vector<std::uint8_t
     roster.reserve(static_cast<std::size_t>(count));
     for (std::uint32_t i = 0; i < count; ++i) {
         PlayerInfo info;
-        info.playerIndex = reader.readU8();
+        info.playerIndex = reader.readU16();
         info.connected = reader.readBool();
         info.colorR = reader.readU8();
         info.colorG = reader.readU8();
@@ -443,6 +590,183 @@ std::vector<PlayerInfo> decodeRosterUpdatePayload(const std::vector<std::uint8_t
         throw std::runtime_error("Roster update payload has trailing bytes");
     }
     return roster;
+}
+
+namespace {
+
+void writeLevelData(std::vector<std::uint8_t>& out, const opm::engine::LevelData& level)
+{
+    writeU32(out, level.foliage.width);
+    writeU32(out, level.foliage.height);
+    writeF32(out, level.spawnX);
+    writeF32(out, level.spawnY);
+    writeF32(out, level.goalX);
+    writeF32(out, level.goalY);
+    writeTileLayer(out, level.background);
+    writeTileLayer(out, level.foliage);
+    writeTileLayer(out, level.foreground);
+}
+
+opm::engine::LevelData readLevelData(PayloadReader& reader)
+{
+    opm::engine::LevelData level;
+    const auto width = reader.readU32();
+    const auto height = reader.readU32();
+    level.spawnX = reader.readF32();
+    level.spawnY = reader.readF32();
+    level.goalX = reader.readF32();
+    level.goalY = reader.readF32();
+    readTileLayer(reader, level.background, width, height);
+    readTileLayer(reader, level.foliage,    width, height);
+    readTileLayer(reader, level.foreground, width, height);
+    return level;
+}
+
+} // namespace
+
+std::vector<std::uint8_t> encodeLevelListResponsePayload(const std::vector<std::string>& names)
+{
+    std::vector<std::uint8_t> out;
+    writeU32(out, static_cast<std::uint32_t>(names.size()));
+    for (const auto& name : names) {
+        writeString(out, name);
+    }
+    return out;
+}
+
+std::vector<std::string> decodeLevelListResponsePayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    const std::uint32_t count = reader.readU32();
+    std::vector<std::string> names;
+    names.reserve(static_cast<std::size_t>(count));
+    for (std::uint32_t i = 0; i < count; ++i) {
+        names.push_back(reader.readString());
+    }
+    if (!reader.done()) {
+        throw std::runtime_error("Level list response payload has trailing bytes");
+    }
+    return names;
+}
+
+std::vector<std::uint8_t> encodeLevelLoadRequestPayload(const std::string& name)
+{
+    std::vector<std::uint8_t> out;
+    writeString(out, name);
+    return out;
+}
+
+std::string decodeLevelLoadRequestPayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    const std::string name = reader.readString();
+    if (!reader.done()) {
+        throw std::runtime_error("Level load request payload has trailing bytes");
+    }
+    return name;
+}
+
+std::vector<std::uint8_t> encodeLevelLoadResponsePayload(const LevelLoadResponseData& data)
+{
+    std::vector<std::uint8_t> out;
+    writeBool(out, data.ok);
+    writeString(out, data.reason);
+    if (data.ok) {
+        writeLevelData(out, data.level);
+    }
+    return out;
+}
+
+LevelLoadResponseData decodeLevelLoadResponsePayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    LevelLoadResponseData data;
+    data.ok = reader.readBool();
+    data.reason = reader.readString();
+    if (data.ok) {
+        data.level = readLevelData(reader);
+    }
+    if (!reader.done()) {
+        throw std::runtime_error("Level load response payload has trailing bytes");
+    }
+    return data;
+}
+
+std::vector<std::uint8_t> encodeLevelSaveRequestPayload(const LevelSaveRequestData& data)
+{
+    std::vector<std::uint8_t> out;
+    writeString(out, data.name);
+    writeLevelData(out, data.level);
+    return out;
+}
+
+LevelSaveRequestData decodeLevelSaveRequestPayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    LevelSaveRequestData data;
+    data.name = reader.readString();
+    data.level = readLevelData(reader);
+    if (!reader.done()) {
+        throw std::runtime_error("Level save request payload has trailing bytes");
+    }
+    return data;
+}
+
+std::vector<std::uint8_t> encodeLevelSaveResponsePayload(const LevelSaveResponseData& data)
+{
+    std::vector<std::uint8_t> out;
+    writeBool(out, data.ok);
+    writeString(out, data.reason);
+    return out;
+}
+
+LevelSaveResponseData decodeLevelSaveResponsePayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    LevelSaveResponseData data;
+    data.ok = reader.readBool();
+    data.reason = reader.readString();
+    if (!reader.done()) {
+        throw std::runtime_error("Level save response payload has trailing bytes");
+    }
+    return data;
+}
+
+std::vector<std::uint8_t> encodeLobbySetLevelRequestPayload(const std::string& levelName)
+{
+    std::vector<std::uint8_t> out;
+    writeString(out, levelName);
+    return out;
+}
+
+std::string decodeLobbySetLevelRequestPayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    const std::string name = reader.readString();
+    if (!reader.done()) {
+        throw std::runtime_error("Lobby set level request payload has trailing bytes");
+    }
+    return name;
+}
+
+std::vector<std::uint8_t> encodeLobbySetLevelResponsePayload(const LobbySetLevelResponseData& data)
+{
+    std::vector<std::uint8_t> out;
+    writeBool(out, data.ok);
+    writeString(out, data.reason);
+    return out;
+}
+
+LobbySetLevelResponseData decodeLobbySetLevelResponsePayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    LobbySetLevelResponseData data;
+    data.ok = reader.readBool();
+    data.reason = reader.readString();
+    if (!reader.done()) {
+        throw std::runtime_error("Lobby set level response payload has trailing bytes");
+    }
+    return data;
 }
 
 } // namespace opm::protocol
