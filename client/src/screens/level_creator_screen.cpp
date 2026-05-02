@@ -495,11 +495,12 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
 
     // Chrome bars use a tighter WindowPadding (set per-Begin below) so
     // a single row of buttons / text centers inside them. Heights chosen
-    // to match the theme's button height (text + 2*FramePadding.y) plus
-    // the chrome WindowPadding.
-    constexpr float kTopBarH    = 50.0F;
-    constexpr float kBottomBarH = 30.0F;
-    constexpr ImVec2 kChromePadding {10.0F, 6.0F};
+    // to fit content snugly: top bar holds buttons (text + 2*FramePadding.y
+    // = ~26px), bottom bar is just text (~14px).
+    constexpr float kTopBarH    = 38.0F;
+    constexpr float kBottomBarH = 22.0F;
+    constexpr ImVec2 kTopBarPadding    {10.0F, 6.0F};
+    constexpr ImVec2 kStatusBarPadding {10.0F, 4.0F};
     constexpr float kMinSidebarW = 140.0F;
     constexpr float kMaxSidebarW = 480.0F;
     // Anchored panels: not movable, not collapsible, no saved settings,
@@ -541,7 +542,7 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
     // ===== Top bar: file / playtest actions =====
     ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
     ImGui::SetNextWindowSize(ImVec2(fbW, kTopBarH));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, kChromePadding);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, kTopBarPadding);
     ImGui::Begin("##creator_topbar", nullptr, kFixedPanelFlags);
     {
         ImGui::AlignTextToFramePadding();
@@ -573,7 +574,7 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
         }
     }
     ImGui::End();
-    ImGui::PopStyleVar(); // kChromePadding (topbar)
+    ImGui::PopStyleVar(); // kTopBarPadding
 
     // ===== Left sidebar: layer + markers + size =====
     ImGui::SetNextWindowPos(ImVec2(0.0F, kTopBarH));
@@ -902,7 +903,7 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
     // ===== Bottom status bar =====
     ImGui::SetNextWindowPos(ImVec2(0.0F, fbH - kBottomBarH));
     ImGui::SetNextWindowSize(ImVec2(fbW, kBottomBarH));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, kChromePadding);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, kStatusBarPadding);
     ImGui::Begin("##creator_status", nullptr, kFixedPanelFlags);
     {
         ImGui::AlignTextToFramePadding();
@@ -946,7 +947,7 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
         }
     }
     ImGui::End();
-    ImGui::PopStyleVar(); // kChromePadding (statusbar)
+    ImGui::PopStyleVar(); // kStatusBarPadding
 #endif
 }
 
