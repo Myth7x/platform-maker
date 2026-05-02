@@ -51,7 +51,9 @@ void LevelPickerScreen::renderUI(ScreenContext& ctx)
         }
     }
     if (session.serverLevels.empty()) {
-        ImGui::TextDisabled("(no levels — create one with the editor!)");
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextWrapped("(no levels — create one with the editor!)");
+        ImGui::PopStyleColor();
     }
     ImGui::EndChild();
 

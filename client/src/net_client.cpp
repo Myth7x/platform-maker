@@ -543,16 +543,25 @@ bool SessionClient::awaitMessage(opm::protocol::MessageType expected,
     std::string& status)
 {
     const bool snapshotIsSideChannel = (expected != opm::protocol::MessageType::LevelSnapshot);
-    while (!drainKnownMessages(recvBuffer_, router_, out, snapshotIsSideChannel)) {
-        if (!pumpRecv(timeoutMs, status)) {
-            return false;
+    while (true) {
+        while (!drainKnownMessages(recvBuffer_, router_, out, snapshotIsSideChannel)) {
+            if (!pumpRecv(timeoutMs, status)) {
+                return false;
+            }
         }
+        // Once the player has joined a lobby the server broadcasts
+        // StateUpdate every tick. Those would otherwise interrupt
+        // request-reply flows (e.g. requestLevelList). Discard them
+        // here — next pollStateUpdate picks up the latest.
+        if (out.type == opm::protocol::MessageType::StateUpdate) {
+            continue;
+        }
+        if (out.type == expected) {
+            return true;
+        }
+        status = "unexpected_message_type";
+        return false;
     }
-    if (out.type == expected) {
-        return true;
-    }
-    status = "unexpected_message_type";
-    return false;
 }
 
 bool SessionClient::requestLevelList(std::uint32_t timeoutMs, std::vector<std::string>& names, std::string& status)

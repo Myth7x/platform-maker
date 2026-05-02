@@ -36,6 +36,7 @@ public:
     // calling again immediately yields nothing.
     void drainRosterUpdates(std::vector<std::vector<opm::protocol::PlayerInfo>>& out);
     void drainLevelSnapshots(std::vector<LevelSnapshot>& out);
+    void drainMapVoteUpdates(std::vector<std::vector<opm::protocol::MapVote>>& out);
 
     // Smoothed round-trip time in milliseconds. 0 when no Pong has
     // arrived yet (or after reset()).
@@ -50,6 +51,7 @@ private:
 
     std::vector<std::vector<opm::protocol::PlayerInfo>> pendingRosters_ {};
     std::vector<LevelSnapshot>                          pendingLevelSnapshots_ {};
+    std::vector<std::vector<opm::protocol::MapVote>>    pendingMapVoteUpdates_ {};
     std::uint32_t                                       pingMs_ {0};
     bool                                                hasPingSample_ {false};
 };

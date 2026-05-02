@@ -43,6 +43,9 @@ bool MessageRouter::dispatch(const opm::protocol::Message& message,
         case opm::protocol::MessageType::Pong:
             recordPong(message);
             return true;
+        case opm::protocol::MessageType::MapVoteUpdate:
+            pendingMapVoteUpdates_.push_back(opm::protocol::decodeMapVoteUpdatePayload(message.payload));
+            return true;
         default:
             return false;
     }
@@ -87,10 +90,19 @@ void MessageRouter::drainLevelSnapshots(std::vector<LevelSnapshot>& out)
     pendingLevelSnapshots_.clear();
 }
 
+void MessageRouter::drainMapVoteUpdates(std::vector<std::vector<opm::protocol::MapVote>>& out)
+{
+    out.insert(out.end(),
+        std::make_move_iterator(pendingMapVoteUpdates_.begin()),
+        std::make_move_iterator(pendingMapVoteUpdates_.end()));
+    pendingMapVoteUpdates_.clear();
+}
+
 void MessageRouter::reset()
 {
     pendingRosters_.clear();
     pendingLevelSnapshots_.clear();
+    pendingMapVoteUpdates_.clear();
     pingMs_ = 0;
     hasPingSample_ = false;
 }

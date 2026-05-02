@@ -35,9 +35,12 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
     ImGui::SetNextWindowPos(
         ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5F, vp->WorkPos.y + vp->WorkSize.y * 0.5F),
         ImGuiCond_Always, ImVec2(0.5F, 0.5F));
-    ImGui::SetNextWindowSize(ImVec2(480.0F, 400.0F));
+    // Width fixed for predictable layout; height grows to fit so the
+    // theme's roomy padding doesn't clip the buttons / status text.
+    ImGui::SetNextWindowSize(ImVec2(520.0F, 0.0F));
     ImGui::Begin("Lobby - Choose Level", nullptr,
-        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar);
 
     ImGui::Text("Connected as player %d. Pick a level for this lobby:",
         callbacks_.getLocalPlayerIndex ? callbacks_.getLocalPlayerIndex() : -1);
@@ -51,7 +54,9 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
         }
     }
     if (session.onlineLevels.empty()) {
-        ImGui::TextDisabled("(no levels on server — use the editor first, or play with the default)");
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextWrapped("(no levels on server — use the editor first, or play with the default)");
+        ImGui::PopStyleColor();
     }
     ImGui::EndChild();
 
