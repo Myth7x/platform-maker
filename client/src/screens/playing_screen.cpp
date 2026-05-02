@@ -2,6 +2,7 @@
 
 #include "game/actor_manager.hpp"
 #include "game/network_session.hpp"
+#include "net_client.hpp"
 #include "render/asset_registry.hpp"
 #include "render/hud.hpp"
 #include "render/sprite.hpp"
@@ -10,32 +11,165 @@
 
 #include "opm/engine.hpp"
 #include "opm/level.hpp"
+#include "opm/protocol.hpp"
 
 #ifdef OPM_CLIENT_HAS_IMGUI
 #include <imgui.h>
 #endif
 
-#ifdef OPM_CLIENT_WITH_OPENGL_STUB
+#if defined(OPM_CLIENT_WITH_OPENGL_STUB) || defined(OPM_CLIENT_WITH_VULKAN)
 #ifdef OPM_CLIENT_WITH_VULKAN
 #define GLFW_INCLUDE_VULKAN
 #endif
 #include <GLFW/glfw3.h>
+#endif
+#ifdef OPM_CLIENT_WITH_OPENGL_STUB
 #include <GL/gl.h>
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <functional>
+#include <iostream>
+#include <string>
 #include <vector>
 
 namespace opm::client {
 
-PlayingScreen::PlayingScreen(opm::client::game::GameSession& session)
+PlayingScreen::PlayingScreen(opm::client::game::GameSession& session, Callbacks callbacks)
     : session_(&session)
+    , callbacks_(std::move(callbacks))
 {}
 
-ScreenTransition PlayingScreen::tick(ScreenContext&, double)
+ScreenTransition PlayingScreen::tick(ScreenContext& ctx, double)
 {
+#if defined(OPM_CLIENT_WITH_OPENGL_STUB) || defined(OPM_CLIENT_WITH_VULKAN)
+    if (ctx.window == nullptr) {
+        return {};
+    }
+    auto& session = *session_;
+
+    // Reset frame timing while not in Playing so re-entry doesn't burst-step.
+    if (session.state != opm::client::game::AppState::Playing) {
+        previousTime_ = glfwGetTime();
+        accumulator_ = 0.0;
+        jumpHeldLast_ = false;
+        timingInitialized_ = true;
+        return {};
+    }
+    if (ctx.net == nullptr) {
+        return {};
+    }
+    auto& net = *ctx.net;
+
+    constexpr float kFixedStepSeconds = 1.0F / 60.0F;
+
+    if (!timingInitialized_) {
+        previousTime_ = glfwGetTime();
+        timingInitialized_ = true;
+    }
+    const double now = glfwGetTime();
+    double frameTime = now - previousTime_;
+    previousTime_ = now;
+    if (frameTime > 0.1) {
+        frameTime = 0.1;
+    }
+    accumulator_ += frameTime;
+
+    GLFWwindow* window = ctx.window;
+
+    while (accumulator_ >= kFixedStepSeconds) {
+#ifdef OPM_CLIENT_HAS_IMGUI
+        const bool imguiCapturesKeyboard = ImGui::GetIO().WantCaptureKeyboard;
+#else
+        const bool imguiCapturesKeyboard = false;
+#endif
+        const bool moveLeft = !imguiCapturesKeyboard &&
+            (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ||
+             glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS);
+        const bool moveRight = !imguiCapturesKeyboard &&
+            (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ||
+             glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS);
+        const bool jumpHeld = !imguiCapturesKeyboard &&
+            (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS ||
+             glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS);
+        const bool runHeld = !imguiCapturesKeyboard &&
+            (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+             glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
+        const bool crouchHeld = !imguiCapturesKeyboard &&
+            (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ||
+             glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS);
+
+        if (session.isOnline && net.session) {
+            std::string netStatus;
+
+            opm::client::net::StateUpdate update;
+            bool gotTick = false;
+            while (net.session->pollStateUpdate(0U, update, netStatus)) {
+                net.actors.applyStateUpdate(update, net.localPlayerIndex);
+                gotTick = true;
+            }
+
+            std::vector<std::vector<opm::protocol::PlayerInfo>> rosterUpdates;
+            net.session->drainRosterUpdates(rosterUpdates);
+            for (const auto& roster : rosterUpdates) {
+                net.actors.applyRoster(roster, net.localPlayerIndex);
+            }
+
+            std::vector<opm::client::net::LevelSnapshot> snaps;
+            net.session->drainLevelSnapshots(snaps);
+            if (!snaps.empty()) {
+                const auto newLevel = opm::client::game::levelFromSnapshot(snaps.back());
+                net.networkLevel = newLevel;
+                session.activeLevel = newLevel;
+                if (callbacks_.onLevelSnapshotChanged) {
+                    callbacks_.onLevelSnapshotChanged(newLevel);
+                }
+                opm::engine::PlayerState localSpawnState;
+                localSpawnState.position.x = newLevel.spawnX;
+                localSpawnState.position.y = newLevel.spawnY;
+                net.actors.updateLocalState(localSpawnState);
+                std::cout << "[client] level switched mid-session: "
+                          << newLevel.foliage.width << "x" << newLevel.foliage.height << "\n";
+            }
+
+            net.session->sendPingIfDue(500U);
+
+            if (gotTick) {
+                opm::engine::InputFrame networkInput {};
+                networkInput.frameIndex = net.actors.lastServerTick();
+                networkInput.moveLeft = moveLeft;
+                networkInput.moveRight = moveRight;
+                networkInput.jumpPressed = jumpHeld && !jumpHeldLast_;
+                networkInput.jumpHeld = jumpHeld;
+                networkInput.runHeld = runHeld;
+                networkInput.crouchHeld = crouchHeld;
+                (void)net.session->sendMovementInput(networkInput, netStatus);
+            }
+        } else {
+            // Offline single-player: run local simulation.
+            std::array<opm::engine::InputFrame, 2> inputs {};
+            inputs[0].frameIndex = session.simulation.state().tick;
+            inputs[0].moveLeft = moveLeft;
+            inputs[0].moveRight = moveRight;
+            inputs[0].jumpPressed = jumpHeld && !jumpHeldLast_;
+            inputs[0].jumpHeld = jumpHeld;
+            inputs[0].runHeld = runHeld;
+            inputs[0].crouchHeld = crouchHeld;
+            inputs[1].frameIndex = session.simulation.state().tick;
+            session.simulation.step(inputs);
+            net.actors.updateLocalState(session.simulation.state().players[0]);
+            net.actors.setWorldActors(session.simulation.state().actors);
+        }
+
+        jumpHeldLast_ = jumpHeld;
+        animationTime_ += kFixedStepSeconds;
+        accumulator_ -= kFixedStepSeconds;
+    }
+#else
+    (void)ctx;
+#endif
     return {};
 }
 
@@ -62,7 +196,7 @@ void PlayingScreen::render(ScreenContext& ctx)
     auto& powerupRegistry = assets.powerups;
     const int framebufferWidth = ctx.framebufferWidth;
     const int framebufferHeight = ctx.framebufferHeight;
-    const float animationTime = ctx.animationTime;
+    const float animationTime = animationTime_;
 
     using opm::client::render::PlayerSprite;
     using opm::client::render::PlayerFrameSelection;

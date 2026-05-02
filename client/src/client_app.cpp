@@ -60,9 +60,6 @@ namespace opm::client {
 namespace {
 
 constexpr float kPixelsPerTile = 24.0F;
-constexpr float kFixedStepSeconds = 1.0F / 60.0F;
-constexpr float kPlayerRenderWidthTiles = 40.0F / kPixelsPerTile;
-constexpr float kPlayerRenderHeightTiles = 40.0F / kPixelsPerTile;
 
 using opm::client::game::kInvalidServerIndex;
 using opm::client::game::levelFromSnapshot;
@@ -293,7 +290,12 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
         },
     });
 
-    PlayingScreen playing(session);
+    PlayingScreen playing(session, PlayingScreen::Callbacks {
+        .onLevelSnapshotChanged = [this](const opm::engine::LevelData& level) {
+            rebuildEntriesFromLevel(session_.entries, level);
+            session_.simulation.setLevel(level);
+        },
+    });
 
     LevelCreatorScreen levelCreator(session, LevelCreatorScreen::Callbacks {
         .onSaveLevel = [&]() {
@@ -342,10 +344,7 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
         },
     });
 
-    bool jumpHeldLast = false;
-    double previousTime = glfwGetTime();
-    double accumulator = 0.0;
-    float animationTime = 0.0F;
+    // Gameplay timing now lives on PlayingScreen.
 
     // ---- Test-mode auto-join ----
     // When launched with --test-mode, skip the main menu entirely:
@@ -409,108 +408,15 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
         ImGui::NewFrame();
 #endif
 
-        // ---- Tick gameplay (fixed-step, only while playing) ----
-        if (session.state == AppState::Playing) {
-            const double now = glfwGetTime();
-            double frameTime = now - previousTime;
-            previousTime = now;
-            if (frameTime > 0.1) {
-                frameTime = 0.1;
-            }
-            accumulator += frameTime;
-
-            while (accumulator >= kFixedStepSeconds) {
-#ifdef OPM_CLIENT_HAS_IMGUI
-                const bool imguiCapturesKeyboard = ImGui::GetIO().WantCaptureKeyboard;
-#else
-                const bool imguiCapturesKeyboard = false;
-#endif
-                const bool moveLeft = !imguiCapturesKeyboard &&
-                    (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ||
-                     glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS);
-                const bool moveRight = !imguiCapturesKeyboard &&
-                    (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ||
-                     glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS);
-                const bool jumpHeld = !imguiCapturesKeyboard &&
-                    (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS ||
-                     glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS);
-                const bool runHeld = !imguiCapturesKeyboard &&
-                    (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
-                     glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
-                const bool crouchHeld = !imguiCapturesKeyboard &&
-                    (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ||
-                     glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS);
-
-                if (session.isOnline && gNetwork.session) {
-                    std::string netStatus;
-
-                    opm::client::net::StateUpdate update;
-                    bool gotTick = false;
-                    while (gNetwork.session->pollStateUpdate(0U, update, netStatus)) {
-                        gNetwork.actors.applyStateUpdate(update, gNetwork.localPlayerIndex);
-                        gotTick = true;
-                    }
-
-                    std::vector<std::vector<opm::protocol::PlayerInfo>> rosterUpdates;
-                    gNetwork.session->drainRosterUpdates(rosterUpdates);
-                    for (const auto& roster : rosterUpdates) {
-                        gNetwork.actors.applyRoster(roster, gNetwork.localPlayerIndex);
-                    }
-
-                    std::vector<opm::client::net::LevelSnapshot> snaps;
-                    gNetwork.session->drainLevelSnapshots(snaps);
-                    if (!snaps.empty()) {
-                        const auto newLevel = levelFromSnapshot(snaps.back());
-                        gNetwork.networkLevel = newLevel;
-                        session.activeLevel = newLevel;
-                        rebuildEntriesFromLevel(session.entries, newLevel);
-                        session.simulation.setLevel(newLevel);
-                        opm::engine::PlayerState localSpawnState;
-                        localSpawnState.position.x = newLevel.spawnX;
-                        localSpawnState.position.y = newLevel.spawnY;
-                        gNetwork.actors.updateLocalState(localSpawnState);
-                        std::cout << "[client] level switched mid-session: "
-                                  << newLevel.foliage.width << "x" << newLevel.foliage.height << "\n";
-                    }
-
-                    gNetwork.session->sendPingIfDue(500U);
-
-                    if (gotTick) {
-                        opm::engine::InputFrame networkInput {};
-                        networkInput.frameIndex = gNetwork.actors.lastServerTick();
-                        networkInput.moveLeft = moveLeft;
-                        networkInput.moveRight = moveRight;
-                        networkInput.jumpPressed = jumpHeld && !jumpHeldLast;
-                        networkInput.jumpHeld = jumpHeld;
-                        networkInput.runHeld = runHeld;
-                        networkInput.crouchHeld = crouchHeld;
-                        (void)gNetwork.session->sendMovementInput(networkInput, netStatus);
-                    }
-                } else {
-                    // Offline single-player: run local simulation.
-                    std::array<opm::engine::InputFrame, 2> inputs {};
-                    inputs[0].frameIndex = session.simulation.state().tick;
-                    inputs[0].moveLeft = moveLeft;
-                    inputs[0].moveRight = moveRight;
-                    inputs[0].jumpPressed = jumpHeld && !jumpHeldLast;
-                    inputs[0].jumpHeld = jumpHeld;
-                    inputs[0].runHeld = runHeld;
-                    inputs[0].crouchHeld = crouchHeld;
-                    inputs[1].frameIndex = session.simulation.state().tick;
-                    session.simulation.step(inputs);
-                    gNetwork.actors.updateLocalState(session.simulation.state().players[0]);
-                    gNetwork.actors.setWorldActors(session.simulation.state().actors);
-                }
-
-                jumpHeldLast = jumpHeld;
-                animationTime += kFixedStepSeconds;
-                accumulator -= kFixedStepSeconds;
-            }
-        } else {
-            // Reset frame timing while in menu so we don't burst-step on entry.
-            previousTime = glfwGetTime();
-            accumulator = 0.0;
-            jumpHeldLast = false;
+        // ---- Tick gameplay ----
+        // PlayingScreen owns the fixed-step loop, input gathering, and
+        // network drain. ScreenContext provides the window handle +
+        // NetworkSessionContext; the screen no-ops when state isn't Playing.
+        {
+            ScreenContext tickCtx { .app = nullptr, .render = renderCtx, .assets = assets,
+                .session = gNetwork.session.get(), .net = &gNetwork,
+                .window = window };
+            (void)playing.tick(tickCtx, 0.0);
         }
 
         // ---- Render ----
@@ -543,8 +449,7 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
         if (session.state == AppState::Playing) {
             ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
                 .session = gNetwork.session.get(), .net = &gNetwork,
-                .framebufferWidth = framebufferWidth, .framebufferHeight = framebufferHeight,
-                .animationTime = animationTime };
+                .framebufferWidth = framebufferWidth, .framebufferHeight = framebufferHeight };
             playing.render(screenCtx);
         } else if (session.state == AppState::LevelCreator) {
             ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
