@@ -60,6 +60,11 @@ struct LevelEditor {
     double dragStartMy {0.0};
     float dragStartCameraX {0.0F};
     float dragStartCameraY {0.0F};
+
+    // User-resizable side panel widths (px). Updated by the editor UI
+    // each frame from ImGui's actual window size, so resize sticks.
+    float leftSidebarWidth {200.0F};
+    float rightSidebarWidth {260.0F};
 };
 
 } // namespace opm::client::game

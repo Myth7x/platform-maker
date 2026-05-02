@@ -494,13 +494,24 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
     auto& powerupRegistry = ctx.assets.powerups;
 
     constexpr float kTopBarH    = 38.0F;
-    constexpr float kBottomBarH = 26.0F;
-    constexpr float kLeftBarW   = 200.0F;
-    constexpr float kRightBarW  = 260.0F;
-    constexpr ImGuiWindowFlags kPanelFlags =
+    constexpr float kBottomBarH = 34.0F;
+    constexpr float kMinSidebarW = 140.0F;
+    constexpr float kMaxSidebarW = 480.0F;
+    // Anchored panels: not movable, not collapsible, no saved settings,
+    // and no scrollbar on edge bars (they're a single fixed line).
+    constexpr ImGuiWindowFlags kFixedPanelFlags =
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoResize  | ImGuiWindowFlags_NoCollapse |
-        ImGuiWindowFlags_NoSavedSettings;
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar;
+    // Side panels keep NoMove but allow ImGui's resize grip so the user
+    // can drag them wider/narrower; widths persist on the editor.
+    constexpr ImGuiWindowFlags kSidePanelFlags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
+    auto& leftBarW  = session.editor.leftSidebarWidth;
+    auto& rightBarW = session.editor.rightSidebarWidth;
+    leftBarW  = std::clamp(leftBarW,  kMinSidebarW, kMaxSidebarW);
+    rightBarW = std::clamp(rightBarW, kMinSidebarW, kMaxSidebarW);
     const float fbW = static_cast<float>(ctx.framebufferWidth);
     const float fbH = static_cast<float>(ctx.framebufferHeight);
 
@@ -525,7 +536,7 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
     // ===== Top bar: file / playtest actions =====
     ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
     ImGui::SetNextWindowSize(ImVec2(fbW, kTopBarH));
-    ImGui::Begin("##creator_topbar", nullptr, kPanelFlags);
+    ImGui::Begin("##creator_topbar", nullptr, kFixedPanelFlags);
     {
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Name");
@@ -559,8 +570,12 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
 
     // ===== Left sidebar: layer + markers + size =====
     ImGui::SetNextWindowPos(ImVec2(0.0F, kTopBarH));
-    ImGui::SetNextWindowSize(ImVec2(kLeftBarW, fbH - kTopBarH - kBottomBarH));
-    ImGui::Begin("##creator_left", nullptr, kPanelFlags);
+    ImGui::SetNextWindowSize(ImVec2(leftBarW, fbH - kTopBarH - kBottomBarH));
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(kMinSidebarW, fbH - kTopBarH - kBottomBarH),
+        ImVec2(kMaxSidebarW, fbH - kTopBarH - kBottomBarH));
+    ImGui::Begin("##creator_left", nullptr, kSidePanelFlags);
+    leftBarW = ImGui::GetWindowSize().x;
     {
         ImGui::TextDisabled("LAYERS");
         ImGui::Separator();
@@ -621,9 +636,13 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
     ImGui::End();
 
     // ===== Right sidebar: contextual content =====
-    ImGui::SetNextWindowPos(ImVec2(fbW - kRightBarW, kTopBarH));
-    ImGui::SetNextWindowSize(ImVec2(kRightBarW, fbH - kTopBarH - kBottomBarH));
-    ImGui::Begin("##creator_right", nullptr, kPanelFlags);
+    ImGui::SetNextWindowPos(ImVec2(fbW - rightBarW, kTopBarH));
+    ImGui::SetNextWindowSize(ImVec2(rightBarW, fbH - kTopBarH - kBottomBarH));
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(kMinSidebarW, fbH - kTopBarH - kBottomBarH),
+        ImVec2(kMaxSidebarW, fbH - kTopBarH - kBottomBarH));
+    ImGui::Begin("##creator_right", nullptr, kSidePanelFlags);
+    rightBarW = ImGui::GetWindowSize().x;
     if (session.editor.activeLayer == EditorLayer::Actors) {
         // ---- Actor properties panel ----
         ImGui::TextDisabled("ACTOR");
@@ -798,10 +817,10 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
     if (inspectorOpen) {
         constexpr float kInspectorW = 240.0F;
         ImGui::SetNextWindowPos(
-            ImVec2(fbW - kRightBarW - kInspectorW, kTopBarH));
+            ImVec2(fbW - rightBarW - kInspectorW, kTopBarH));
         ImGui::SetNextWindowSize(
             ImVec2(kInspectorW, fbH - kTopBarH - kBottomBarH));
-        ImGui::Begin("##creator_collision", nullptr, kPanelFlags);
+        ImGui::Begin("##creator_collision", nullptr, kFixedPanelFlags);
         {
             const std::uint16_t tileId = session.editor.selectedTile;
             ImGui::TextDisabled("TILE %u", static_cast<unsigned>(tileId));
@@ -859,7 +878,7 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
     // ===== Bottom status bar =====
     ImGui::SetNextWindowPos(ImVec2(0.0F, fbH - kBottomBarH));
     ImGui::SetNextWindowSize(ImVec2(fbW, kBottomBarH));
-    ImGui::Begin("##creator_status", nullptr, kPanelFlags);
+    ImGui::Begin("##creator_status", nullptr, kFixedPanelFlags);
     {
         ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("%ux%u",
