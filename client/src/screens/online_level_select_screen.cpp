@@ -1,5 +1,7 @@
 #include "screens/online_level_select_screen.hpp"
 
+#include "net_client.hpp"
+
 #ifdef OPM_CLIENT_HAS_IMGUI
 #include <imgui.h>
 #endif
