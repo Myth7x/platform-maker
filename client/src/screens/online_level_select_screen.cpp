@@ -1,5 +1,7 @@
 #include "screens/online_level_select_screen.hpp"
 
+#include "game/actor_manager.hpp"
+#include "game/network_session.hpp"
 #include "net_client.hpp"
 
 #ifdef OPM_CLIENT_HAS_IMGUI
@@ -7,6 +9,7 @@
 #endif
 
 #include <cstddef>
+#include <cstdio>
 
 namespace opm::client {
 
@@ -100,6 +103,71 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(1.0F, 0.55F, 0.45F, 1.0F), "%s", session.onlineLevelStatus.c_str());
     }
+
+    // ===== Player list footer =====
+    // Pulled from ctx.net->actors so we get both the local player and
+    // every remote roster entry the server has told us about. Local
+    // entry is highlighted via the accent color.
+    if (ctx.net != nullptr) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        const auto& actors = ctx.net->actors.actors();
+        std::size_t connectedCount = 0;
+        for (const auto& a : actors) {
+            if (a.isLocal || a.info.connected) {
+                connectedCount += 1;
+            }
+        }
+        ImGui::TextDisabled("Players in lobby (%zu):", connectedCount);
+        ImGui::BeginChild("##player_list", ImVec2(0.0F, 140.0F), true);
+        for (const auto& a : actors) {
+            if (!a.isLocal && !a.info.connected) {
+                continue;
+            }
+            const auto& info = a.info;
+            char nameBuf[96];
+            const char* displayName = !info.displayName.empty()
+                ? info.displayName.c_str()
+                : "Player";
+            const std::uint16_t slot = a.isLocal && a.serverIndex != opm::client::game::kInvalidServerIndex
+                ? a.serverIndex
+                : info.playerIndex;
+            std::snprintf(nameBuf, sizeof(nameBuf), "#%u  %s%s",
+                static_cast<unsigned>(slot),
+                displayName,
+                a.isLocal ? "  (you)" : "");
+
+            // Color swatch + name. Use the accent for local, the
+            // server-provided color for remotes.
+            const ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
+            const ImVec4 swatch = a.isLocal
+                ? accent
+                : ImVec4(static_cast<float>(info.colorR) / 255.0F,
+                         static_cast<float>(info.colorG) / 255.0F,
+                         static_cast<float>(info.colorB) / 255.0F, 1.0F);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const ImVec2 cur = ImGui::GetCursorScreenPos();
+            const float dotR = ImGui::GetTextLineHeight() * 0.45F;
+            const ImVec2 dotCenter(cur.x + dotR, cur.y + ImGui::GetTextLineHeight() * 0.5F);
+            dl->AddCircleFilled(dotCenter, dotR, ImGui::ColorConvertFloat4ToU32(swatch));
+            ImGui::Dummy(ImVec2(dotR * 2.0F + 6.0F, ImGui::GetTextLineHeight()));
+            ImGui::SameLine();
+            if (a.isLocal) {
+                ImGui::TextColored(accent, "%s", nameBuf);
+            } else {
+                ImGui::TextUnformatted(nameBuf);
+            }
+        }
+        if (connectedCount == 0) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::TextWrapped("(no players reported yet — waiting for roster)");
+            ImGui::PopStyleColor();
+        }
+        ImGui::EndChild();
+    }
+
     ImGui::End();
 #endif
 }
