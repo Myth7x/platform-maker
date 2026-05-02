@@ -385,113 +385,19 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
     };
 #endif
 
-    GameSession session {};
+    // session, manifest are members of ClientApp; alias them locally so
+    // the remaining code in this function (~1100 lines of fixed-step,
+    // render, and input branches) keeps using bare `session.X` /
+    // `manifest` names without churn.
+    manifest_ = &manifest;
+    auto& session = session_;
 
-    auto rebuildEntriesFromLevel = [&](LayeredEntries& out, const opm::engine::LevelData& level) {
-        out.background = opm::client::render::buildTileLayerDrawEntries(manifest, level.background, kPixelsPerTile);
-        out.foliage    = opm::client::render::buildTileLayerDrawEntries(manifest, level.foliage,    kPixelsPerTile);
-        out.foreground = opm::client::render::buildTileLayerDrawEntries(manifest, level.foreground, kPixelsPerTile);
-    };
-
-    auto enterPlaying = [&](bool online, const opm::engine::LevelData& levelData) {
-        session.activeLevel = levelData;
-        rebuildEntriesFromLevel(session.entries, session.activeLevel);
-        session.simulation.setLevel(levelData);
-        session.isOnline = online;
-        session.fromEditor = false; // caller sets true for Test Play
-        session.state = AppState::Playing;
-        std::cout << "[client] entered playing mode online=" << (online ? "true" : "false")
-                  << " level=" << levelData.foliage.width << "x" << levelData.foliage.height << "\n";
-    };
-
-    auto enterLevelPicker = [&](const std::string& host, std::uint16_t port,
-                                GameSession::PickerIntent intent) -> std::string {
-        const auto connectResult = tryConnect(host, port);
-        if (!connectResult.ok) {
-            return connectResult.message;
-        }
-        std::string status;
-        if (!gNetwork.session->requestLevelList(2000U, session.serverLevels, status)) {
-            return "level list request failed: " + status;
-        }
-        session.selectedLevelIndex = -1;
-        session.pickerStatus.clear();
-        session.pickerIntent = intent;
-        session.state = AppState::LevelPicker;
-        return {};
-    };
-
-    auto enterLevelCreator = [&]() {
-        // The engine convention is: level y=0 is the bottom row (ground) and
-        // y increases upward (sky). Default blank level: 60x16, ground top at
-        // y=2 in the foliage layer with two fill rows below, spawn just above.
-        opm::engine::LevelData blank;
-        opm::engine::resizeAllLayers(blank, 60U, 16U);
-
-        constexpr std::uint16_t kGroundTopMid = 2U;
-        constexpr std::uint16_t kGroundFill = 5U;
-        const std::uint32_t groundY = 2U;
-        for (std::uint32_t x = 0; x < blank.foliage.width; ++x) {
-            blank.foliage.tileIndices[static_cast<std::size_t>(groundY) * blank.foliage.width + x] = kGroundTopMid;
-            for (std::uint32_t y = 0; y < groundY; ++y) {
-                blank.foliage.tileIndices[static_cast<std::size_t>(y) * blank.foliage.width + x] = kGroundFill;
-            }
-        }
-        blank.spawnX = 3.0F;
-        blank.spawnY = static_cast<float>(groundY + 1U);
-        blank.goalX = static_cast<float>(blank.foliage.width - 3U);
-        blank.goalY = static_cast<float>(groundY + 1U);
-
-        session.editor = {};
-        session.editor.level = std::move(blank);
-        session.editor.resizeWidth = static_cast<int>(session.editor.level.foliage.width);
-        session.editor.resizeHeight = static_cast<int>(session.editor.level.foliage.height);
-        rebuildEntriesFromLevel(session.editor.entries, session.editor.level);
-        session.editor.selectedTile = palette.empty() ? std::uint16_t {1} : palette.front().tileIndex;
-        session.editor.activeLayer = EditorLayer::Foliage;
-        session.state = AppState::LevelCreator;
-    };
-
-    // Variant for opening the editor on a pre-loaded server level. Same
-    // setup as enterLevelCreator() but skips the blank-level scaffolding.
-    auto editLoadedLevel = [&](opm::engine::LevelData loaded, const std::string& name) {
-        session.editor = {};
-        session.editor.level = std::move(loaded);
-        session.editor.resizeWidth = static_cast<int>(session.editor.level.foliage.width);
-        session.editor.resizeHeight = static_cast<int>(session.editor.level.foliage.height);
-        rebuildEntriesFromLevel(session.editor.entries, session.editor.level);
-        session.editor.selectedTile = palette.empty() ? std::uint16_t {1} : palette.front().tileIndex;
-        session.editor.activeLayer = EditorLayer::Foliage;
-        // Pre-fill the name input so Save round-trips back to the same slot.
-        const auto trimmed = name.substr(0, sizeof(session.editor.nameInput) - 1U);
-        std::snprintf(session.editor.nameInput, sizeof(session.editor.nameInput), "%s", trimmed.c_str());
-        session.state = AppState::LevelCreator;
-    };
-
-    auto rebuildEditorEntries = [&]() {
-        rebuildEntriesFromLevel(session.editor.entries, session.editor.level);
-    };
-
-    auto layerByEnum = [&](EditorLayer which) -> opm::engine::TileLayer& {
-        switch (which) {
-            case EditorLayer::Background: return session.editor.level.background;
-            case EditorLayer::Foreground: return session.editor.level.foreground;
-            case EditorLayer::Foliage:    [[fallthrough]];
-            default:                      return session.editor.level.foliage;
-        }
-    };
-    auto layerEntriesByEnum = [&](EditorLayer which) -> std::vector<opm::client::render::TileDrawEntry>& {
-        switch (which) {
-            case EditorLayer::Background: return session.editor.entries.background;
-            case EditorLayer::Foreground: return session.editor.entries.foreground;
-            case EditorLayer::Foliage:    [[fallthrough]];
-            default:                      return session.editor.entries.foliage;
-        }
-    };
-    auto rebuildActiveLayerEntries = [&]() {
-        auto& layer = layerByEnum(session.editor.activeLayer);
-        layerEntriesByEnum(session.editor.activeLayer) =
-            opm::client::render::buildTileLayerDrawEntries(manifest, layer, kPixelsPerTile);
+    // Helpers that used to be local lambdas are now ClientApp methods.
+    // Re-bind as lambdas at the call sites below where capture syntax
+    // is most natural; here we just bind a couple that take palette.
+    auto enterLevelCreator = [this, &palette]() { this->enterLevelCreator(palette); };
+    auto editLoadedLevel = [this, &palette](opm::engine::LevelData loaded, const std::string& name) {
+        this->editLoadedLevel(std::move(loaded), name, palette);
     };
 
     // Per-screen handlers. MainMenuScreen is the first one carved out
@@ -1574,6 +1480,146 @@ int ClientApp::runWindow(const opm::assets::AssetManifest&,
 {
     return 0;
 }
+#endif
+
+#if defined(OPM_CLIENT_WITH_OPENGL_STUB) || defined(OPM_CLIENT_WITH_VULKAN)
+
+void ClientApp::rebuildEntriesFromLevel(LayeredEntries& out, const opm::engine::LevelData& level)
+{
+    out.background = opm::client::render::buildTileLayerDrawEntries(*manifest_, level.background, kPixelsPerTile);
+    out.foliage    = opm::client::render::buildTileLayerDrawEntries(*manifest_, level.foliage,    kPixelsPerTile);
+    out.foreground = opm::client::render::buildTileLayerDrawEntries(*manifest_, level.foreground, kPixelsPerTile);
+}
+
+void ClientApp::enterPlaying(bool online, const opm::engine::LevelData& levelData)
+{
+    session_.activeLevel = levelData;
+    rebuildEntriesFromLevel(session_.entries, session_.activeLevel);
+    session_.simulation.setLevel(levelData);
+    session_.isOnline = online;
+    session_.fromEditor = false; // caller sets true for Test Play
+    session_.state = AppState::Playing;
+    std::cout << "[client] entered playing mode online=" << (online ? "true" : "false")
+              << " level=" << levelData.foliage.width << "x" << levelData.foliage.height << "\n";
+}
+
+std::string ClientApp::enterLevelPicker(const std::string& host, std::uint16_t port,
+                                        GameSession::PickerIntent intent)
+{
+    const auto connectResult = tryConnect(host, port);
+    if (!connectResult.ok) {
+        return connectResult.message;
+    }
+    std::string status;
+    if (!gNetwork.session->requestLevelList(2000U, session_.serverLevels, status)) {
+        return "level list request failed: " + status;
+    }
+    session_.selectedLevelIndex = -1;
+    session_.pickerStatus.clear();
+    session_.pickerIntent = intent;
+    session_.state = AppState::LevelPicker;
+    return {};
+}
+
+void ClientApp::enterLevelCreator(const std::vector<opm::client::render::PaletteEntry>& palette)
+{
+    // The engine convention is: level y=0 is the bottom row (ground) and
+    // y increases upward (sky). Default blank level: 60x16, ground top at
+    // y=2 in the foliage layer with two fill rows below, spawn just above.
+    opm::engine::LevelData blank;
+    opm::engine::resizeAllLayers(blank, 60U, 16U);
+
+    constexpr std::uint16_t kGroundTopMid = 2U;
+    constexpr std::uint16_t kGroundFill = 5U;
+    const std::uint32_t groundY = 2U;
+    for (std::uint32_t x = 0; x < blank.foliage.width; ++x) {
+        blank.foliage.tileIndices[static_cast<std::size_t>(groundY) * blank.foliage.width + x] = kGroundTopMid;
+        for (std::uint32_t y = 0; y < groundY; ++y) {
+            blank.foliage.tileIndices[static_cast<std::size_t>(y) * blank.foliage.width + x] = kGroundFill;
+        }
+    }
+    blank.spawnX = 3.0F;
+    blank.spawnY = static_cast<float>(groundY + 1U);
+    blank.goalX = static_cast<float>(blank.foliage.width - 3U);
+    blank.goalY = static_cast<float>(groundY + 1U);
+
+    session_.editor = {};
+    session_.editor.level = std::move(blank);
+    session_.editor.resizeWidth = static_cast<int>(session_.editor.level.foliage.width);
+    session_.editor.resizeHeight = static_cast<int>(session_.editor.level.foliage.height);
+    rebuildEntriesFromLevel(session_.editor.entries, session_.editor.level);
+    session_.editor.selectedTile = palette.empty() ? std::uint16_t {1} : palette.front().tileIndex;
+    session_.editor.activeLayer = EditorLayer::Foliage;
+    session_.state = AppState::LevelCreator;
+}
+
+void ClientApp::editLoadedLevel(opm::engine::LevelData loaded, const std::string& name,
+                                const std::vector<opm::client::render::PaletteEntry>& palette)
+{
+    session_.editor = {};
+    session_.editor.level = std::move(loaded);
+    session_.editor.resizeWidth = static_cast<int>(session_.editor.level.foliage.width);
+    session_.editor.resizeHeight = static_cast<int>(session_.editor.level.foliage.height);
+    rebuildEntriesFromLevel(session_.editor.entries, session_.editor.level);
+    session_.editor.selectedTile = palette.empty() ? std::uint16_t {1} : palette.front().tileIndex;
+    session_.editor.activeLayer = EditorLayer::Foliage;
+    // Pre-fill the name input so Save round-trips back to the same slot.
+    const auto trimmed = name.substr(0, sizeof(session_.editor.nameInput) - 1U);
+    std::snprintf(session_.editor.nameInput, sizeof(session_.editor.nameInput), "%s", trimmed.c_str());
+    session_.state = AppState::LevelCreator;
+}
+
+void ClientApp::rebuildEditorEntries()
+{
+    rebuildEntriesFromLevel(session_.editor.entries, session_.editor.level);
+}
+
+opm::engine::TileLayer& ClientApp::layerByEnum(EditorLayer which)
+{
+    switch (which) {
+        case EditorLayer::Background: return session_.editor.level.background;
+        case EditorLayer::Foreground: return session_.editor.level.foreground;
+        case EditorLayer::Foliage:    [[fallthrough]];
+        default:                      return session_.editor.level.foliage;
+    }
+}
+
+std::vector<opm::client::render::TileDrawEntry>& ClientApp::layerEntriesByEnum(EditorLayer which)
+{
+    switch (which) {
+        case EditorLayer::Background: return session_.editor.entries.background;
+        case EditorLayer::Foreground: return session_.editor.entries.foreground;
+        case EditorLayer::Foliage:    [[fallthrough]];
+        default:                      return session_.editor.entries.foliage;
+    }
+}
+
+void ClientApp::rebuildActiveLayerEntries()
+{
+    auto& layer = layerByEnum(session_.editor.activeLayer);
+    layerEntriesByEnum(session_.editor.activeLayer) =
+        opm::client::render::buildTileLayerDrawEntries(*manifest_, layer, kPixelsPerTile);
+}
+
+#else
+
+void ClientApp::rebuildEntriesFromLevel(LayeredEntries&, const opm::engine::LevelData&) {}
+void ClientApp::enterPlaying(bool, const opm::engine::LevelData&) {}
+std::string ClientApp::enterLevelPicker(const std::string&, std::uint16_t, GameSession::PickerIntent) { return {}; }
+void ClientApp::enterLevelCreator(const std::vector<opm::client::render::PaletteEntry>&) {}
+void ClientApp::editLoadedLevel(opm::engine::LevelData, const std::string&,
+                                const std::vector<opm::client::render::PaletteEntry>&) {}
+void ClientApp::rebuildEditorEntries() {}
+opm::engine::TileLayer& ClientApp::layerByEnum(EditorLayer) {
+    static opm::engine::TileLayer empty {};
+    return empty;
+}
+std::vector<opm::client::render::TileDrawEntry>& ClientApp::layerEntriesByEnum(EditorLayer) {
+    static std::vector<opm::client::render::TileDrawEntry> empty {};
+    return empty;
+}
+void ClientApp::rebuildActiveLayerEntries() {}
+
 #endif
 
 
