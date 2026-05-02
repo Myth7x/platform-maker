@@ -1,6 +1,7 @@
 #include "client_app.hpp"
 
 #include "game/actor_manager.hpp"
+#include "game/game_session.hpp"
 #include "game/level_editor.hpp"
 #include "net_client.hpp"
 #include "render/asset_registry.hpp"
@@ -332,52 +333,12 @@ void drawPSpeedHud(const float meterValue, const bool pSpeedActive, const int fr
 
 #if defined(OPM_CLIENT_WITH_OPENGL_STUB) || defined(OPM_CLIENT_WITH_VULKAN)
 
-enum class AppState {
-    MainMenu,
-    LevelPicker,
-    OnlineLevelSelect,
-    LevelCreator,
-    Playing,
-};
-
+using opm::client::game::AppState;
 using opm::client::game::EditorLayer;
+using opm::client::game::GameSession;
 using opm::client::game::LayeredEntries;
 using opm::client::game::LevelEditor;
 
-
-struct GameSession {
-    AppState state {AppState::MainMenu};
-    bool isOnline {false};
-    opm::engine::Simulation simulation;
-    opm::engine::LevelData activeLevel;
-    LayeredEntries entries;
-    char addressInput[64] {"127.0.0.1:34900"};
-    std::string menuStatus;
-
-    // LevelPicker state.
-    std::vector<std::string> serverLevels {};
-    std::string pickerStatus {};
-    int selectedLevelIndex {-1};
-    // What the user is going to do with the picked level — controls the
-    // confirm-button label and the action taken on click.
-    enum class PickerIntent : std::uint8_t {
-        PlayOffline = 0,
-        EditOnServer = 1,
-    };
-    PickerIntent pickerIntent {PickerIntent::PlayOffline};
-
-    // OnlineLevelSelect state (after a multiplayer lobby join, before play).
-    std::vector<std::string> onlineLevels {};
-    int onlineLevelSelected {-1};
-    std::string onlineLevelStatus {};
-
-    // LevelCreator state.
-    LevelEditor editor {};
-
-    // Set to true when Playing state was entered via "Test Play" from the editor.
-    // Allows the "Back to Editor" button in the Playing HUD.
-    bool fromEditor {false};
-};
 
 int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engine::LevelData& fallbackLevel,
                     const opm::client::ClientArgs& clientArgs)
