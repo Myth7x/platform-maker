@@ -1,39 +1,12 @@
 #include "screens/main_menu_screen.hpp"
 
+#include "game/network_session.hpp"
+
 #ifdef OPM_CLIENT_HAS_IMGUI
 #include <imgui.h>
 #endif
 
-#include <charconv>
-#include <string_view>
-#include <system_error>
-
 namespace opm::client {
-namespace {
-
-// Local copy of client_app.cpp's parseAddress. Inlined here to keep the
-// screen self-contained while the wider refactor is in progress; once
-// every screen migrates we'll lift it into a shared util header.
-bool parseHostPort(std::string_view input, std::string& hostOut, std::uint16_t& portOut)
-{
-    const auto colon = input.rfind(':');
-    if (colon == std::string_view::npos || colon == 0 || colon + 1 >= input.size()) {
-        return false;
-    }
-    hostOut.assign(input.substr(0, colon));
-    const auto portStr = input.substr(colon + 1);
-    int port = 0;
-    const auto* begin = portStr.data();
-    const auto* end = portStr.data() + portStr.size();
-    auto [ptr, ec] = std::from_chars(begin, end, port);
-    if (ec != std::errc {} || ptr != end || port <= 0 || port > 65535) {
-        return false;
-    }
-    portOut = static_cast<std::uint16_t>(port);
-    return true;
-}
-
-} // namespace
 
 MainMenuScreen::MainMenuScreen(opm::client::game::GameSession& session, Callbacks callbacks)
     : session_(&session)
@@ -61,7 +34,7 @@ void MainMenuScreen::renderUI(ScreenContext&)
     // Server address is hardcoded to the default; field hidden from menu.
 
     const auto resolveHostPort = [&](std::string& host, std::uint16_t& port) -> bool {
-        if (!parseHostPort(session.addressInput, host, port)) {
+        if (!opm::client::game::parseAddress(session.addressInput, host, port)) {
             session.menuStatus = "Invalid address. Use host:port (e.g. 127.0.0.1:34900).";
             return false;
         }
