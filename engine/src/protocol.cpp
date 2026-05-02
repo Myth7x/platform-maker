@@ -491,6 +491,10 @@ std::vector<std::uint8_t> encodeStateUpdatePayload(const StateUpdateData& update
         out.push_back(a.enemyKind);
         out.push_back(a.category);
     }
+    // Game phase tail (added later — readers tolerate older payloads).
+    out.push_back(static_cast<std::uint8_t>(update.phase));
+    writeU32(out, update.countdownTicks);
+    writeU16(out, update.winnerSlot);
     return out;
 }
 
@@ -546,6 +550,18 @@ StateUpdateData decodeStateUpdatePayload(const std::vector<std::uint8_t>& payloa
             }
             update.actors.push_back(a);
         }
+    }
+
+    // Game phase tail. Optional for backward compat with older payloads
+    // that didn't include it.
+    if (!reader.done()) {
+        update.phase = static_cast<GamePhase>(reader.readU8());
+    }
+    if (!reader.done()) {
+        update.countdownTicks = reader.readU32();
+    }
+    if (!reader.done()) {
+        update.winnerSlot = reader.readU16();
     }
 
     if (!reader.done()) {
@@ -767,6 +783,52 @@ LobbySetLevelResponseData decodeLobbySetLevelResponsePayload(const std::vector<s
         throw std::runtime_error("Lobby set level response payload has trailing bytes");
     }
     return data;
+}
+
+std::vector<std::uint8_t> encodeMapVoteRequestPayload(const std::string& levelName)
+{
+    std::vector<std::uint8_t> out;
+    writeString(out, levelName);
+    return out;
+}
+
+std::string decodeMapVoteRequestPayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    const std::string name = reader.readString();
+    if (!reader.done()) {
+        throw std::runtime_error("Map vote request payload has trailing bytes");
+    }
+    return name;
+}
+
+std::vector<std::uint8_t> encodeMapVoteUpdatePayload(const std::vector<MapVote>& votes)
+{
+    std::vector<std::uint8_t> out;
+    writeU32(out, static_cast<std::uint32_t>(votes.size()));
+    for (const auto& v : votes) {
+        writeU16(out, v.slotIndex);
+        writeString(out, v.levelName);
+    }
+    return out;
+}
+
+std::vector<MapVote> decodeMapVoteUpdatePayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    const auto count = reader.readU32();
+    std::vector<MapVote> votes;
+    votes.reserve(static_cast<std::size_t>(count));
+    for (std::uint32_t i = 0; i < count; ++i) {
+        MapVote v;
+        v.slotIndex = reader.readU16();
+        v.levelName = reader.readString();
+        votes.push_back(std::move(v));
+    }
+    if (!reader.done()) {
+        throw std::runtime_error("Map vote update payload has trailing bytes");
+    }
+    return votes;
 }
 
 } // namespace opm::protocol

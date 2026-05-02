@@ -29,7 +29,17 @@ enum class MessageType : std::uint8_t {
     LevelSaveRequest = 17,
     LevelSaveResponse = 18,
     LobbySetLevelRequest = 19,
-    LobbySetLevelResponse = 20
+    LobbySetLevelResponse = 20,
+    MapVoteRequest = 21,    // client -> server: "I vote for level X"
+    MapVoteUpdate = 22,     // server -> all in lobby: tally of votes
+};
+
+// Server-tracked game phase for the active session. Broadcast on every
+// StateUpdate so clients can render the right HUD overlay.
+enum class GamePhase : std::uint8_t {
+    PreGame = 0,   // 1+ players present, countdown ticking, players confined to spawn safezone
+    Playing = 1,   // race in progress, first-to-goal wins
+    GameOver = 2,  // someone won (or everyone left); brief display before reset
 };
 
 struct Message {
@@ -97,6 +107,19 @@ struct StateUpdateData {
     std::uint32_t serverTick {0};
     std::vector<PlayerNetState> players {};
     std::vector<ActorNetState> actors {};
+
+    // Game phase + countdown + winner. Sent every tick so clients always
+    // know whether to render the lobby/countdown/winner overlay.
+    GamePhase phase {GamePhase::PreGame};
+    std::uint32_t countdownTicks {0};   // remaining ticks in current PreGame / GameOver phase
+    std::uint16_t winnerSlot {0xFFFFU}; // valid only when phase == GameOver
+};
+
+// One vote, sent from a client to the server. The server tallies and
+// broadcasts a MapVoteUpdate when the tally changes.
+struct MapVote {
+    std::uint16_t slotIndex {0xFFFFU}; // which player voted (server fills this in for outgoing tallies)
+    std::string levelName {};          // the level they voted for (empty = withdraw vote)
 };
 
 [[nodiscard]] std::vector<std::uint8_t> encodeMessage(const Message& message);
@@ -159,6 +182,14 @@ struct LevelSaveResponseData {
 
 [[nodiscard]] std::vector<std::uint8_t> encodeLobbySetLevelRequestPayload(const std::string& levelName);
 [[nodiscard]] std::string decodeLobbySetLevelRequestPayload(const std::vector<std::uint8_t>& payload);
+
+// Map vote: client request payload is just the level name (empty = withdraw).
+[[nodiscard]] std::vector<std::uint8_t> encodeMapVoteRequestPayload(const std::string& levelName);
+[[nodiscard]] std::string decodeMapVoteRequestPayload(const std::vector<std::uint8_t>& payload);
+
+// Map vote tally broadcast: list of (slotIndex, levelName) pairs.
+[[nodiscard]] std::vector<std::uint8_t> encodeMapVoteUpdatePayload(const std::vector<MapVote>& votes);
+[[nodiscard]] std::vector<MapVote> decodeMapVoteUpdatePayload(const std::vector<std::uint8_t>& payload);
 
 struct LobbySetLevelResponseData {
     bool ok {false};

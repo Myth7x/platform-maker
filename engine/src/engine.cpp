@@ -374,6 +374,11 @@ const GameState& Simulation::state() const
     return state_;
 }
 
+GameState& Simulation::mutableState()
+{
+    return state_;
+}
+
 const LevelData& Simulation::level() const
 {
     return level_;

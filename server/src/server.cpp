@@ -65,6 +65,7 @@ int Server::run()
         tickRecvAndDispatch();
         tickProcessDrops();
         tickStepSimulation();
+        tickGamePhase();
         tickBroadcastState();
         tickProcessSendFailures();
         tickReportStats();
@@ -203,6 +204,8 @@ bool Server::handleMessage(ClientConnection& conn,
             return handleLevelSaveRequest(conn, payload);
         case opm::protocol::MessageType::LobbySetLevelRequest:
             return handleLobbySetLevelRequest(conn, payload);
+        case opm::protocol::MessageType::MapVoteRequest:
+            return handleMapVoteRequest(conn, payload);
         default:
             return true;
     }
@@ -259,6 +262,24 @@ bool Server::handleLobbyJoinRequest(ClientConnection& conn, std::span<const std:
     // physics + player-vs-player collision.
     simulation_.respawnPlayer(*assignedSlot);
 
+    // First-player-in-the-game: enter PreGame so the countdown starts
+    // and clients see the "Get ready!" overlay. If a game was already
+    // PreGame/Playing/GameOver this is a no-op — the new player joins
+    // mid-state.
+    bool wasEmpty = true;
+    for (std::size_t i = 0; i < simulation_.state().players.size(); ++i) {
+        if (i == *assignedSlot) {
+            continue;
+        }
+        if (simulation_.state().players[i].active) {
+            wasEmpty = false;
+            break;
+        }
+    }
+    if (wasEmpty) {
+        enterPreGame();
+    }
+
     if (!sendJoinResponse(conn, response)) {
         return false;
     }
@@ -266,6 +287,7 @@ bool Server::handleLobbyJoinRequest(ClientConnection& conn, std::span<const std:
         return false;
     }
     broadcastRoster(*lobby);
+    broadcastMapVoteUpdate();
     return true;
 }
 
@@ -451,6 +473,187 @@ void Server::tickStepSimulation()
     for (auto& input : pendingInputs_) {
         input = {};
     }
+    // During PreGame, players are confined to the spawn safe zone — if
+    // physics moved someone outside (or they spawned just outside), pull
+    // them back. Done after the step so the visible position next tick
+    // is the clamped one.
+    if (gamePhase_ == opm::protocol::GamePhase::PreGame) {
+        confinePlayersToSafeZone();
+    }
+}
+
+void Server::confinePlayersToSafeZone()
+{
+    const auto zone = opm::engine::computeSpawnSafeZone(simulation_.level());
+    auto& players = simulation_.mutableState().players;
+    for (auto& p : players) {
+        if (!p.active) {
+            continue;
+        }
+        // Clamp the player AABB so its left edge >= zone.minX, right
+        // edge <= zone.maxX (player width = kPlayerWidthTiles); same for
+        // Y. If the clamp had to move us, also kill velocity in that axis
+        // so we don't keep slamming into the invisible wall every tick.
+        const float minX = static_cast<float>(zone.minX);
+        const float maxX = static_cast<float>(zone.maxX) - opm::engine::kPlayerWidthTiles;
+        const float minY = static_cast<float>(zone.minY);
+        const float maxY = static_cast<float>(zone.maxY) - opm::engine::kPlayerHeightTiles;
+        if (p.position.x < minX) { p.position.x = minX; if (p.velocity.x < 0) p.velocity.x = 0; }
+        if (p.position.x > maxX) { p.position.x = maxX; if (p.velocity.x > 0) p.velocity.x = 0; }
+        if (p.position.y < minY) { p.position.y = minY; if (p.velocity.y < 0) p.velocity.y = 0; }
+        if (p.position.y > maxY) { p.position.y = maxY; if (p.velocity.y > 0) p.velocity.y = 0; }
+    }
+}
+
+std::uint16_t Server::firstPlayerAtGoal() const
+{
+    const auto& level = simulation_.level();
+    const float gx = level.goalX;
+    const float gy = level.goalY;
+    // Goal is a 1x1 tile; the player's AABB hitting it counts as a touch.
+    const float gxRight = gx + 1.0F;
+    const float gyTop   = gy + 1.0F;
+    const auto& players = simulation_.state().players;
+    for (std::size_t i = 0; i < players.size(); ++i) {
+        const auto& p = players[i];
+        if (!p.active) {
+            continue;
+        }
+        const float pxRight = p.position.x + opm::engine::kPlayerWidthTiles;
+        const float pyTop   = p.position.y + opm::engine::kPlayerHeightTiles;
+        const bool overlaps =
+            p.position.x < gxRight && pxRight > gx
+         && p.position.y < gyTop   && pyTop   > gy;
+        if (overlaps) {
+            return static_cast<std::uint16_t>(i);
+        }
+    }
+    return kNoWinnerSlot;
+}
+
+void Server::enterPreGame()
+{
+    gamePhase_ = opm::protocol::GamePhase::PreGame;
+    countdownTicks_ = kPreGameCountdownTicks;
+    winnerSlot_ = kNoWinnerSlot;
+    mapVotes_.clear();
+    // Refresh the available-levels list so the vote screen reflects what
+    // the storage actually holds right now.
+    availableLevels_ = levelStorage_.listNames();
+    std::cout << "[server] phase -> PreGame (countdown " << kPreGameCountdownTicks << " ticks)\n";
+}
+
+void Server::enterPlaying()
+{
+    gamePhase_ = opm::protocol::GamePhase::Playing;
+    countdownTicks_ = 0;
+    winnerSlot_ = kNoWinnerSlot;
+    // Apply the most-voted level if anyone voted; otherwise keep current.
+    const auto winningLevel = tallyWinningMap();
+    if (!winningLevel.empty()) {
+        opm::engine::LevelData level;
+        std::string err;
+        if (levelStorage_.load(winningLevel, level, err)) {
+            simulation_.setLevel(level);
+            std::cout << "[server] phase -> Playing on voted level '" << winningLevel << "'\n";
+            // Broadcast the new level so every connected client switches.
+            const auto payloadBytes = opm::protocol::encodeLevelSnapshotPayload(simulation_.level());
+            WireBuilder wire;
+            wire.build(opm::protocol::MessageType::LevelSnapshot, payloadBytes);
+            for (auto& [fd, conn] : connections_.map()) {
+                (void)conn.send(wire.view());
+            }
+        } else {
+            std::cout << "[server] phase -> Playing (vote winner '" << winningLevel
+                      << "' failed to load: " << err << "); keeping current level\n";
+        }
+    } else {
+        std::cout << "[server] phase -> Playing on current level (no votes)\n";
+    }
+    // Respawn all active players at the (possibly new) spawn.
+    for (std::size_t i = 0; i < simulation_.state().players.size(); ++i) {
+        if (simulation_.state().players[i].active) {
+            simulation_.respawnPlayer(i);
+        }
+    }
+}
+
+void Server::enterGameOver(std::uint16_t winnerSlot)
+{
+    gamePhase_ = opm::protocol::GamePhase::GameOver;
+    countdownTicks_ = kGameOverDisplayTicks;
+    winnerSlot_ = winnerSlot;
+    std::cout << "[server] phase -> GameOver winner=" << winnerSlot << "\n";
+}
+
+std::string Server::tallyWinningMap() const
+{
+    if (mapVotes_.empty()) {
+        return {};
+    }
+    std::unordered_map<std::string, std::uint32_t> tally;
+    for (const auto& [slot, name] : mapVotes_) {
+        if (!name.empty()) {
+            tally[name] += 1U;
+        }
+    }
+    std::string best;
+    std::uint32_t bestCount = 0;
+    for (const auto& [name, count] : tally) {
+        if (count > bestCount) {
+            best = name;
+            bestCount = count;
+        }
+    }
+    return best;
+}
+
+void Server::tickGamePhase()
+{
+    // Detect "no players left" and snap back to PreGame so the next
+    // join starts clean.
+    bool anyActive = false;
+    for (const auto& p : simulation_.state().players) {
+        if (p.active) {
+            anyActive = true;
+            break;
+        }
+    }
+    if (!anyActive) {
+        if (gamePhase_ != opm::protocol::GamePhase::PreGame || countdownTicks_ != 0U) {
+            gamePhase_ = opm::protocol::GamePhase::PreGame;
+            countdownTicks_ = 0U; // paused — counting resumes when a player joins
+            winnerSlot_ = kNoWinnerSlot;
+            mapVotes_.clear();
+        }
+        return;
+    }
+
+    switch (gamePhase_) {
+        case opm::protocol::GamePhase::PreGame:
+            if (countdownTicks_ > 0U) {
+                countdownTicks_ -= 1U;
+                if (countdownTicks_ == 0U) {
+                    enterPlaying();
+                }
+            }
+            break;
+        case opm::protocol::GamePhase::Playing: {
+            const auto winner = firstPlayerAtGoal();
+            if (winner != kNoWinnerSlot) {
+                enterGameOver(winner);
+            }
+            break;
+        }
+        case opm::protocol::GamePhase::GameOver:
+            if (countdownTicks_ > 0U) {
+                countdownTicks_ -= 1U;
+                if (countdownTicks_ == 0U) {
+                    enterPreGame();
+                }
+            }
+            break;
+    }
 }
 
 void Server::tickBroadcastState()
@@ -501,6 +704,9 @@ void Server::tickBroadcastState()
             .category = static_cast<std::uint8_t>(a.category),
         });
     }
+    data.phase = gamePhase_;
+    data.countdownTicks = countdownTicks_;
+    data.winnerSlot = winnerSlot_;
     const auto payload = opm::protocol::encodeStateUpdatePayload(data);
     broadcastWire_.build(opm::protocol::MessageType::StateUpdate, payload);
 
@@ -547,6 +753,41 @@ void Server::tickReportStats()
                   << " measuredHz=" << measuredHz << "\n";
         statsAnchor_ = now;
         statsAnchorTick_ = simulation_.state().tick;
+    }
+}
+
+bool Server::handleMapVoteRequest(ClientConnection& conn, std::span<const std::uint8_t> payload)
+{
+    const auto& session = conn.session();
+    if (session.playerIndex == kInvalidPlayerSlot) {
+        return true; // not in lobby; ignore
+    }
+    scratchPayload_.assign(payload.begin(), payload.end());
+    const auto levelName = opm::protocol::decodeMapVoteRequestPayload(scratchPayload_);
+    if (levelName.empty()) {
+        mapVotes_.erase(session.playerIndex);
+    } else {
+        mapVotes_[session.playerIndex] = levelName;
+    }
+    broadcastMapVoteUpdate();
+    return true;
+}
+
+void Server::broadcastMapVoteUpdate()
+{
+    std::vector<opm::protocol::MapVote> tally;
+    tally.reserve(mapVotes_.size());
+    for (const auto& [slot, name] : mapVotes_) {
+        tally.push_back(opm::protocol::MapVote {.slotIndex = slot, .levelName = name});
+    }
+    const auto payloadBytes = opm::protocol::encodeMapVoteUpdatePayload(tally);
+    WireBuilder wire;
+    wire.build(opm::protocol::MessageType::MapVoteUpdate, payloadBytes);
+    for (auto& [fd, conn] : connections_.map()) {
+        if (conn.session().playerIndex == kInvalidPlayerSlot) {
+            continue;
+        }
+        (void)conn.send(wire.view());
     }
 }
 

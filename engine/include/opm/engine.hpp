@@ -148,6 +148,11 @@ public:
     [[nodiscard]] const LevelData& level() const;
     [[nodiscard]] std::uint64_t stateHash() const;
 
+    // Write access to game state — used by the server for post-step
+    // constraints (e.g. clamping players to a safe zone during a
+    // pre-game countdown). Don't mutate during step().
+    [[nodiscard]] GameState& mutableState();
+
 private:
     void integratePlayer(PlayerState& player, const InputFrame& input,
         const std::vector<PlayerState>& others, std::size_t selfIndex);
