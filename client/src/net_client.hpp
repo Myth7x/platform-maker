@@ -109,6 +109,11 @@ public:
     [[nodiscard]] bool requestSetLobbyLevel(const std::string& levelName,
         std::uint32_t timeoutMs, std::string& status);
 
+    // Cast / withdraw a map vote during the lobby PreGame countdown.
+    // Empty levelName withdraws this player's vote. Fire-and-forget;
+    // server broadcasts the tally back via MapVoteUpdate.
+    [[nodiscard]] bool sendMapVote(const std::string& levelName, std::string& status);
+
     // Returns and clears any LevelSnapshot messages received since the last
     // call (during gameplay polls).
     void drainLevelSnapshots(std::vector<LevelSnapshot>& out);

@@ -4,6 +4,7 @@
 
 #include "opm/engine.hpp"
 #include "opm/level.hpp"
+#include "opm/protocol.hpp"
 
 #include <cstdint>
 #include <string>
@@ -56,6 +57,9 @@ struct GameSession {
     std::vector<std::string> onlineLevels {};
     int onlineLevelSelected {-1};
     std::string onlineLevelStatus {};
+    // Latest map-vote tally from the server. One entry per ballot (one
+    // per voting player). Updated by the lobby screen's onPollServer.
+    std::vector<opm::protocol::MapVote> mapVoteTally {};
 
     // LevelCreator state.
     LevelEditor editor {};

@@ -20,20 +20,25 @@ class OnlineLevelSelectScreen final : public Screen {
 public:
     struct Callbacks {
         // Drain server traffic for this frame: poll any state updates,
-        // drain LevelSnapshot / RosterUpdate queues, send a ping if due.
+        // drain LevelSnapshot / RosterUpdate / MapVoteUpdate queues,
+        // send a ping if due.
         std::function<void()> onPollServer;
 
         // Server's idea of who we are, for the header text.
         std::function<int()> getLocalPlayerIndex;
 
-        // Try to set the lobby level; on success blocks briefly to
-        // receive the fresh LevelSnapshot and transitions to Playing.
-        // Returns error message (empty on success).
+        // Force the lobby level (single-player path). On success blocks
+        // briefly to receive the fresh LevelSnapshot and transitions to
+        // Playing. Returns error message (empty on success).
         std::function<std::string(const std::string& levelName)> onUseSelectedLevel;
 
         // Skip the level pick — use whichever level the lobby is
         // already running. Implementation transitions to Playing.
         std::function<void()> onUseCurrentLevel;
+
+        // Cast a map vote (multi-player path). Empty `levelName` means
+        // withdraw the current vote. Server broadcasts the new tally.
+        std::function<void(const std::string& levelName)> onCastVote;
 
         // Refresh the level catalogue from the server. Returns error
         // message (empty on success).

@@ -272,6 +272,13 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             for (const auto& roster : rosterUpdates) {
                 gNetwork.actors.applyRoster(roster, gNetwork.localPlayerIndex);
             }
+            // Pull MapVoteUpdate broadcasts so the lobby UI reflects
+            // the latest tally without waiting for a poll-driven request.
+            std::vector<std::vector<opm::protocol::MapVote>> voteUpdates;
+            gNetwork.session->router().drainMapVoteUpdates(voteUpdates);
+            if (!voteUpdates.empty()) {
+                session.mapVoteTally = std::move(voteUpdates.back());
+            }
             gNetwork.session->sendPingIfDue(1000U);
         },
         .getLocalPlayerIndex = [&]() {
@@ -301,6 +308,13 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
         },
         .onUseCurrentLevel = [&]() {
             enterPlaying(true, gNetwork.networkLevel);
+        },
+        .onCastVote = [&](const std::string& levelName) {
+            if (!gNetwork.session) {
+                return;
+            }
+            std::string status;
+            (void)gNetwork.session->sendMapVote(levelName, status);
         },
         .onRefresh = [&]() -> std::string {
             std::string status;

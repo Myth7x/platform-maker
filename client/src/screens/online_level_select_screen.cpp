@@ -45,15 +45,69 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar);
 
-    ImGui::Text("Connected as player %d. Pick a level for this lobby:",
-        callbacks_.getLocalPlayerIndex ? callbacks_.getLocalPlayerIndex() : -1);
+    // Determine voting mode: more than one connected player → cooperative
+    // map vote; otherwise single-player can pick directly.
+    std::size_t connectedCount = 0;
+    if (ctx.net != nullptr) {
+        for (const auto& a : ctx.net->actors.actors()) {
+            if (a.isLocal || a.info.connected) {
+                connectedCount += 1;
+            }
+        }
+    }
+    const bool votingMode = connectedCount >= 2U;
+    const int localSlot = callbacks_.getLocalPlayerIndex ? callbacks_.getLocalPlayerIndex() : -1;
+
+    ImGui::Text("Connected as player %d.  %s", localSlot,
+        votingMode ? "Vote for the next level:" : "Pick a level for this lobby:");
     ImGui::Separator();
+
+    // Per-level vote tally (only used in voting mode but built either way
+    // — cheap and shared by the rendering loop below).
+    auto countVotesFor = [&](const std::string& name) -> int {
+        int n = 0;
+        for (const auto& v : session.mapVoteTally) {
+            if (v.levelName == name) {
+                n += 1;
+            }
+        }
+        return n;
+    };
+    auto isMyVote = [&](const std::string& name) -> bool {
+        if (localSlot < 0) {
+            return false;
+        }
+        for (const auto& v : session.mapVoteTally) {
+            if (v.slotIndex == static_cast<std::uint16_t>(localSlot) && v.levelName == name) {
+                return true;
+            }
+        }
+        return false;
+    };
 
     ImGui::BeginChild("##online_levels", ImVec2(0.0F, 240.0F), true);
     for (int i = 0; i < static_cast<int>(session.onlineLevels.size()); ++i) {
+        const auto& name = session.onlineLevels[static_cast<std::size_t>(i)];
         const bool selected = session.onlineLevelSelected == i;
-        if (ImGui::Selectable(session.onlineLevels[i].c_str(), selected)) {
+
+        // Right-aligned vote tally text inside the row.
+        char rowLabel[160];
+        if (votingMode) {
+            const int votes = countVotesFor(name);
+            const char* mark = isMyVote(name) ? "*" : " ";
+            std::snprintf(rowLabel, sizeof(rowLabel), "%s   [%s%d vote%s]",
+                name.c_str(), mark, votes, votes == 1 ? "" : "s");
+        } else {
+            std::snprintf(rowLabel, sizeof(rowLabel), "%s", name.c_str());
+        }
+
+        if (ImGui::Selectable(rowLabel, selected)) {
             session.onlineLevelSelected = i;
+            if (votingMode) {
+                // Click = vote (and visually select). Withdraw + re-cast
+                // is a single click.
+                callbacks_.onCastVote(name);
+            }
         }
     }
     if (session.onlineLevels.empty()) {
@@ -64,35 +118,66 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
     ImGui::EndChild();
 
     ImGui::Separator();
-    const bool canSet = session.onlineLevelSelected >= 0 &&
-        session.onlineLevelSelected < static_cast<int>(session.onlineLevels.size()) &&
-        ctx.session != nullptr && ctx.session->isConnected();
-    ImGui::BeginDisabled(!canSet);
-    if (ImGui::Button("Use Selected Level", ImVec2(180.0F, 32.0F))) {
-        const auto& name = session.onlineLevels[static_cast<std::size_t>(session.onlineLevelSelected)];
-        const auto err = callbacks_.onUseSelectedLevel(name);
-        if (err.empty()) {
+
+    if (votingMode) {
+        const bool canVote = session.onlineLevelSelected >= 0 &&
+            session.onlineLevelSelected < static_cast<int>(session.onlineLevels.size());
+        ImGui::BeginDisabled(!canVote);
+        if (ImGui::Button("Vote for Selected", ImVec2(180.0F, 32.0F))) {
+            const auto& name = session.onlineLevels[static_cast<std::size_t>(session.onlineLevelSelected)];
+            callbacks_.onCastVote(name);
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Withdraw Vote", ImVec2(140.0F, 32.0F))) {
+            callbacks_.onCastVote("");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Refresh", ImVec2(90.0F, 32.0F))) {
+            const auto err = callbacks_.onRefresh();
+            if (err.empty()) {
+                session.onlineLevelStatus.clear();
+                session.onlineLevelSelected = -1;
+            } else {
+                session.onlineLevelStatus = err;
+            }
+        }
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextWrapped("Voting: pick a level then wait for the countdown — the most-voted level loads when the round starts. * marks your vote.");
+        ImGui::PopStyleColor();
+    } else {
+        const bool canSet = session.onlineLevelSelected >= 0 &&
+            session.onlineLevelSelected < static_cast<int>(session.onlineLevels.size()) &&
+            ctx.session != nullptr && ctx.session->isConnected();
+        ImGui::BeginDisabled(!canSet);
+        if (ImGui::Button("Use Selected Level", ImVec2(180.0F, 32.0F))) {
+            const auto& name = session.onlineLevels[static_cast<std::size_t>(session.onlineLevelSelected)];
+            const auto err = callbacks_.onUseSelectedLevel(name);
+            if (err.empty()) {
+                session.onlineLevelStatus.clear();
+            } else {
+                session.onlineLevelStatus = err;
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Use Current Level", ImVec2(160.0F, 32.0F))) {
+            callbacks_.onUseCurrentLevel();
             session.onlineLevelStatus.clear();
-        } else {
-            session.onlineLevelStatus = err;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Refresh", ImVec2(90.0F, 32.0F))) {
+            const auto err = callbacks_.onRefresh();
+            if (err.empty()) {
+                session.onlineLevelStatus.clear();
+                session.onlineLevelSelected = -1;
+            } else {
+                session.onlineLevelStatus = err;
+            }
         }
     }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Button("Use Current Level", ImVec2(160.0F, 32.0F))) {
-        callbacks_.onUseCurrentLevel();
-        session.onlineLevelStatus.clear();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Refresh", ImVec2(90.0F, 32.0F))) {
-        const auto err = callbacks_.onRefresh();
-        if (err.empty()) {
-            session.onlineLevelStatus.clear();
-            session.onlineLevelSelected = -1;
-        } else {
-            session.onlineLevelStatus = err;
-        }
-    }
+
     ImGui::Spacing();
     if (ImGui::Button("Disconnect", ImVec2(120.0F, 28.0F))) {
         callbacks_.onDisconnect();
@@ -127,17 +212,27 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
                 continue;
             }
             const auto& info = a.info;
-            char nameBuf[96];
+            char nameBuf[160];
             const char* displayName = !info.displayName.empty()
                 ? info.displayName.c_str()
                 : "Player";
             const std::uint16_t slot = a.isLocal && a.serverIndex != opm::client::game::kInvalidServerIndex
                 ? a.serverIndex
                 : info.playerIndex;
-            std::snprintf(nameBuf, sizeof(nameBuf), "#%u  %s%s",
+            // Append "→ levelname" if this player has cast a vote.
+            const char* votedLevel = "";
+            for (const auto& v : session.mapVoteTally) {
+                if (v.slotIndex == slot && !v.levelName.empty()) {
+                    votedLevel = v.levelName.c_str();
+                    break;
+                }
+            }
+            std::snprintf(nameBuf, sizeof(nameBuf), "#%u  %s%s%s%s",
                 static_cast<unsigned>(slot),
                 displayName,
-                a.isLocal ? "  (you)" : "");
+                a.isLocal ? "  (you)" : "",
+                votedLevel[0] != '\0' ? "  -> " : "",
+                votedLevel);
 
             // Color swatch + name. Use the accent for local, the
             // server-provided color for remotes.

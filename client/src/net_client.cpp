@@ -385,6 +385,21 @@ bool SessionClient::sendMovementInput(const opm::engine::InputFrame& input, std:
         status);
 }
 
+bool SessionClient::sendMapVote(const std::string& levelName, std::string& status)
+{
+    if (fd_ == kInvalidSocket) {
+        status = "socket_not_connected";
+        return false;
+    }
+    return sendMessage(
+        fd_,
+        opm::protocol::Message {
+            .type = opm::protocol::MessageType::MapVoteRequest,
+            .payload = opm::protocol::encodeMapVoteRequestPayload(levelName),
+        },
+        status);
+}
+
 void SessionClient::sendPingIfDue(const std::uint32_t intervalMs)
 {
     if (fd_ == kInvalidSocket) {
