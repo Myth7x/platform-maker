@@ -529,7 +529,7 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             levelPicker.renderUI(screenCtx);
         } else if (session.state == AppState::OnlineLevelSelect) {
             ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
-                .session = gNetwork.session.get() };
+                .session = gNetwork.session.get(), .net = &gNetwork };
             onlineLevelSelect.tick(screenCtx, 0.0);
             onlineLevelSelect.renderUI(screenCtx);
         } else if (session.state == AppState::LevelCreator) {
