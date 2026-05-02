@@ -5,6 +5,7 @@
 #include "game/level_editor.hpp"
 #include "screens/level_picker_screen.hpp"
 #include "screens/main_menu_screen.hpp"
+#include "screens/online_level_select_screen.hpp"
 #include "net_client.hpp"
 #include "render/asset_registry.hpp"
 #include "render/render_context.hpp"
@@ -535,6 +536,75 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
             gNetwork.localPlayerIndex = kInvalidServerIndex;
             gNetwork.actors.resetLocalOnly();
             enterPlaying(false, loaded);
+        },
+    });
+
+    OnlineLevelSelectScreen onlineLevelSelect(session, OnlineLevelSelectScreen::Callbacks {
+        .onPollServer = [&]() {
+            if (!gNetwork.session || !gNetwork.session->isConnected()) {
+                return;
+            }
+            std::string discardStatus;
+            opm::client::net::StateUpdate discard;
+            while (gNetwork.session->pollStateUpdate(0U, discard, discardStatus)) {
+                // Discard — gameplay hasn't started.
+            }
+            std::vector<opm::client::net::LevelSnapshot> snaps;
+            gNetwork.session->drainLevelSnapshots(snaps);
+            for (auto& s : snaps) {
+                gNetwork.networkLevel = levelFromSnapshot(s);
+            }
+            std::vector<std::vector<opm::protocol::PlayerInfo>> rosterUpdates;
+            gNetwork.session->drainRosterUpdates(rosterUpdates);
+            for (const auto& roster : rosterUpdates) {
+                gNetwork.actors.applyRoster(roster, gNetwork.localPlayerIndex);
+            }
+            gNetwork.session->sendPingIfDue(1000U);
+        },
+        .getLocalPlayerIndex = [&]() {
+            return static_cast<int>(gNetwork.localPlayerIndex);
+        },
+        .onUseSelectedLevel = [&](const std::string& name) -> std::string {
+            std::string status;
+            if (!gNetwork.session || !gNetwork.session->requestSetLobbyLevel(name, 2000U, status)) {
+                return "set level failed: " + status;
+            }
+            // Server broadcasts a fresh LevelSnapshot right after the
+            // response. Drain a few state updates briefly to give the
+            // snapshot time to arrive before we enter Playing.
+            std::vector<opm::client::net::LevelSnapshot> snaps;
+            gNetwork.session->drainLevelSnapshots(snaps);
+            for (int i = 0; i < 10 && snaps.empty(); ++i) {
+                opm::client::net::StateUpdate discard;
+                std::string s;
+                (void)gNetwork.session->pollStateUpdate(20U, discard, s);
+                gNetwork.session->drainLevelSnapshots(snaps);
+            }
+            for (auto& s : snaps) {
+                gNetwork.networkLevel = levelFromSnapshot(s);
+            }
+            enterPlaying(true, gNetwork.networkLevel);
+            return {};
+        },
+        .onUseCurrentLevel = [&]() {
+            enterPlaying(true, gNetwork.networkLevel);
+        },
+        .onRefresh = [&]() -> std::string {
+            std::string status;
+            if (!gNetwork.session ||
+                !gNetwork.session->requestLevelList(2000U, session.onlineLevels, status)) {
+                return "refresh failed: " + status;
+            }
+            return {};
+        },
+        .onDisconnect = [&]() {
+            if (gNetwork.session) {
+                gNetwork.session->disconnect();
+            }
+            gNetwork.connected = false;
+            gNetwork.localPlayerIndex = kInvalidServerIndex;
+            gNetwork.actors.resetLocalOnly();
+            session.state = AppState::MainMenu;
         },
     });
 
@@ -1401,115 +1471,9 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
             ScreenContext screenCtx { nullptr, renderCtx, assets, gNetwork.session.get() };
             levelPicker.renderUI(screenCtx);
         } else if (session.state == AppState::OnlineLevelSelect) {
-            // Drain server traffic so the recv buffer doesn't fill while the
-            // user picks. Snapshots arriving here update the lobby's "current"
-            // level shown if they pick "Use current level".
-            if (gNetwork.session && gNetwork.session->isConnected()) {
-                std::string discardStatus;
-                opm::client::net::StateUpdate discard;
-                while (gNetwork.session->pollStateUpdate(0U, discard, discardStatus)) {
-                    // Discard — gameplay hasn't started.
-                }
-                std::vector<opm::client::net::LevelSnapshot> snaps;
-                gNetwork.session->drainLevelSnapshots(snaps);
-                for (auto& s : snaps) {
-                    gNetwork.networkLevel = levelFromSnapshot(s);
-                }
-                std::vector<std::vector<opm::protocol::PlayerInfo>> rosterUpdates;
-                gNetwork.session->drainRosterUpdates(rosterUpdates);
-                for (const auto& roster : rosterUpdates) {
-                    gNetwork.actors.applyRoster(roster, gNetwork.localPlayerIndex);
-                }
-                gNetwork.session->sendPingIfDue(1000U);
-            }
-
-            ImGuiViewport* vp = ImGui::GetMainViewport();
-            ImGui::SetNextWindowPos(
-                ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5F, vp->WorkPos.y + vp->WorkSize.y * 0.5F),
-                ImGuiCond_Always, ImVec2(0.5F, 0.5F));
-            ImGui::SetNextWindowSize(ImVec2(480.0F, 400.0F));
-            ImGui::Begin("Lobby - Choose Level", nullptr,
-                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
-
-            ImGui::Text("Connected as player %d. Pick a level for this lobby:",
-                static_cast<int>(gNetwork.localPlayerIndex));
-            ImGui::Separator();
-
-            ImGui::BeginChild("##online_levels", ImVec2(0.0F, 240.0F), true);
-            for (int i = 0; i < static_cast<int>(session.onlineLevels.size()); ++i) {
-                const bool selected = session.onlineLevelSelected == i;
-                if (ImGui::Selectable(session.onlineLevels[i].c_str(), selected)) {
-                    session.onlineLevelSelected = i;
-                }
-            }
-            if (session.onlineLevels.empty()) {
-                ImGui::TextDisabled("(no levels on server — use the editor first, or play with the default)");
-            }
-            ImGui::EndChild();
-
-            ImGui::Separator();
-            const bool canSet = session.onlineLevelSelected >= 0 &&
-                session.onlineLevelSelected < static_cast<int>(session.onlineLevels.size()) &&
-                gNetwork.session && gNetwork.session->isConnected();
-            ImGui::BeginDisabled(!canSet);
-            if (ImGui::Button("Use Selected Level", ImVec2(180.0F, 32.0F))) {
-                const auto& name = session.onlineLevels[static_cast<std::size_t>(session.onlineLevelSelected)];
-                std::string status;
-                if (gNetwork.session->requestSetLobbyLevel(name, 2000U, status)) {
-                    // The server broadcasts a fresh LevelSnapshot right after
-                    // the response. Drain a few state updates briefly to give
-                    // the snapshot time to arrive before we enter Playing.
-                    std::vector<opm::client::net::LevelSnapshot> snaps;
-                    gNetwork.session->drainLevelSnapshots(snaps);
-                    for (int i = 0; i < 10 && snaps.empty(); ++i) {
-                        opm::client::net::StateUpdate discard;
-                        std::string s;
-                        (void)gNetwork.session->pollStateUpdate(20U, discard, s);
-                        gNetwork.session->drainLevelSnapshots(snaps);
-                    }
-                    for (auto& s : snaps) {
-                        gNetwork.networkLevel = levelFromSnapshot(s);
-                    }
-                    enterPlaying(true, gNetwork.networkLevel);
-                    session.onlineLevelStatus.clear();
-                } else {
-                    session.onlineLevelStatus = "set level failed: " + status;
-                }
-            }
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            if (ImGui::Button("Use Current Level", ImVec2(160.0F, 32.0F))) {
-                enterPlaying(true, gNetwork.networkLevel);
-                session.onlineLevelStatus.clear();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Refresh", ImVec2(90.0F, 32.0F))) {
-                std::string status;
-                if (!gNetwork.session ||
-                    !gNetwork.session->requestLevelList(2000U, session.onlineLevels, status)) {
-                    session.onlineLevelStatus = "refresh failed: " + status;
-                } else {
-                    session.onlineLevelStatus.clear();
-                    session.onlineLevelSelected = -1;
-                }
-            }
-            ImGui::Spacing();
-            if (ImGui::Button("Disconnect", ImVec2(120.0F, 28.0F))) {
-                if (gNetwork.session) {
-                    gNetwork.session->disconnect();
-                }
-                gNetwork.connected = false;
-                gNetwork.localPlayerIndex = kInvalidServerIndex;
-                gNetwork.actors.resetLocalOnly();
-                session.state = AppState::MainMenu;
-                session.onlineLevelStatus.clear();
-            }
-
-            if (!session.onlineLevelStatus.empty()) {
-                ImGui::Spacing();
-                ImGui::TextColored(ImVec4(1.0F, 0.55F, 0.45F, 1.0F), "%s", session.onlineLevelStatus.c_str());
-            }
-            ImGui::End();
+            ScreenContext screenCtx { nullptr, renderCtx, assets, gNetwork.session.get() };
+            onlineLevelSelect.tick(screenCtx, 0.0);
+            onlineLevelSelect.renderUI(screenCtx);
         } else if (session.state == AppState::LevelCreator) {
             // ============================================================
             // Level editor layout — four anchored ImGui regions framing the
