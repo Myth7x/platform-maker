@@ -544,8 +544,10 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
         glLoadIdentity();
 
         if (session.state == AppState::Playing) {
-            ScreenContext screenCtx { nullptr, renderCtx, assets, gNetwork.session.get(),
-                &gNetwork, framebufferWidth, framebufferHeight, animationTime };
+            ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
+                .session = gNetwork.session.get(), .net = &gNetwork,
+                .framebufferWidth = framebufferWidth, .framebufferHeight = framebufferHeight,
+                .animationTime = animationTime };
             playing.render(screenCtx);
         } else if (session.state == AppState::LevelCreator) {
 #ifdef OPM_CLIENT_HAS_IMGUI
@@ -963,21 +965,26 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
         // ---- Menu / picker / creator UI ----
 #ifdef OPM_CLIENT_HAS_IMGUI
         if (session.state == AppState::MainMenu) {
-            ScreenContext screenCtx { nullptr, renderCtx, assets, gNetwork.session.get() };
+            ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
+                .session = gNetwork.session.get() };
             mainMenu.renderUI(screenCtx);
         } else if (session.state == AppState::LevelPicker) {
-            ScreenContext screenCtx { nullptr, renderCtx, assets, gNetwork.session.get() };
+            ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
+                .session = gNetwork.session.get() };
             levelPicker.renderUI(screenCtx);
         } else if (session.state == AppState::OnlineLevelSelect) {
-            ScreenContext screenCtx { nullptr, renderCtx, assets, gNetwork.session.get() };
+            ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
+                .session = gNetwork.session.get() };
             onlineLevelSelect.tick(screenCtx, 0.0);
             onlineLevelSelect.renderUI(screenCtx);
         } else if (session.state == AppState::LevelCreator) {
-            ScreenContext screenCtx { nullptr, renderCtx, assets, gNetwork.session.get(),
-                framebufferWidth, framebufferHeight };
+            ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
+                .session = gNetwork.session.get(),
+                .framebufferWidth = framebufferWidth, .framebufferHeight = framebufferHeight };
             levelCreator.renderUI(screenCtx);
         } else if (session.state == AppState::Playing) {
-            ScreenContext screenCtx { nullptr, renderCtx, assets, gNetwork.session.get() };
+            ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
+                .session = gNetwork.session.get() };
             playing.renderUI(screenCtx);
         }
 
