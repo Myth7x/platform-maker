@@ -3,17 +3,19 @@
 #include "game/actor_manager.hpp"
 #include "game/game_session.hpp"
 #include "game/level_editor.hpp"
+#include "game/network_session.hpp"
+#include "net_client.hpp"
+#include "render/asset_registry.hpp"
+#include "render/hud.hpp"
+#include "render/render_context.hpp"
+#include "render/sprite.hpp"
+#include "render/texture.hpp"
+#include "render/texture_loader.hpp"
 #include "screens/level_creator_screen.hpp"
 #include "screens/level_picker_screen.hpp"
 #include "screens/main_menu_screen.hpp"
 #include "screens/online_level_select_screen.hpp"
 #include "screens/playing_screen.hpp"
-#include "net_client.hpp"
-#include "render/asset_registry.hpp"
-#include "render/render_context.hpp"
-#include "render/sprite.hpp"
-#include "render/texture.hpp"
-#include "render/texture_loader.hpp"
 #include "sprite_config.hpp"
 #include "tile_layer.hpp"
 
@@ -53,8 +55,6 @@
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl2.h>
-#include <charconv>
-#include <string_view>
 #endif
 
 namespace opm::client {
@@ -65,36 +65,28 @@ constexpr float kFixedStepSeconds = 1.0F / 60.0F;
 constexpr float kPlayerRenderWidthTiles = 40.0F / kPixelsPerTile;
 constexpr float kPlayerRenderHeightTiles = 40.0F / kPixelsPerTile;
 
-using opm::client::game::Actor;
-using opm::client::game::ActorManager;
 using opm::client::game::kInvalidServerIndex;
-using opm::client::game::remoteStateToPlayerState;
-
-
-struct NetworkSessionContext {
-    std::unique_ptr<opm::client::net::SessionClient> session {};
-    bool connected {false};
-    std::uint16_t localPlayerIndex {kInvalidServerIndex};
-    opm::engine::LevelData networkLevel {};
-    ActorManager actors {};
-};
+using opm::client::game::levelFromSnapshot;
+using opm::client::game::NetworkSessionContext;
+using opm::client::game::parseAddress;
+using opm::client::game::tryConnect;
+using opm::client::game::tryLobbyFlow;
 
 NetworkSessionContext gNetwork {};
 
 #ifdef OPM_CLIENT_WITH_OPENGL_STUB
-using opm::client::render::Texture2D;
 using opm::client::render::AnimClip;
+using opm::client::render::AssetRegistry;
+using opm::client::render::EnemyRegistry;
+using opm::client::render::EnemySprite;
+using opm::client::render::PlayerFrameSelection;
 using opm::client::render::PlayerSprite;
 using opm::client::render::PlayerSpriteSet;
-using opm::client::render::EnemySprite;
-using opm::client::render::EnemyRegistry;
-using opm::client::render::PlayerFrameSelection;
-using opm::client::render::drawTextureQuad;
-using opm::client::render::selectPlayerFrame;
-using opm::client::render::selectEnemyFrame;
-using opm::client::render::PaletteEntry;
-using opm::client::render::AssetRegistry;
 using opm::client::render::RenderContext;
+using opm::client::render::Texture2D;
+using opm::client::render::drawTextureQuad;
+using opm::client::render::selectEnemyFrame;
+using opm::client::render::selectPlayerFrame;
 #endif
 
 opm::assets::AssetManifest loadAndPrintAssetSummary(const std::filesystem::path& root)
@@ -138,202 +130,9 @@ void printTileLayerStubSummary(const opm::assets::AssetManifest& manifest, const
     }
 }
 
-opm::engine::LevelData levelFromSnapshot(const opm::client::net::LevelSnapshot& snapshot)
-{
-    opm::engine::LevelData level;
-    auto setLayer = [&](opm::engine::TileLayer& layer, const std::vector<std::uint16_t>& src) {
-        layer.width = snapshot.width;
-        layer.height = snapshot.height;
-        const auto expected = static_cast<std::size_t>(snapshot.width) * static_cast<std::size_t>(snapshot.height);
-        if (src.size() == expected) {
-            layer.tileIndices = src;
-        } else {
-            // Tolerate older servers that didn't send a layer.
-            layer.tileIndices.assign(expected, 0U);
-        }
-    };
-    setLayer(level.background, snapshot.background);
-    setLayer(level.foliage,    snapshot.foliage);
-    setLayer(level.foreground, snapshot.foreground);
-    level.spawnX = snapshot.spawnX;
-    level.spawnY = snapshot.spawnY;
-    level.goalX = snapshot.goalX;
-    level.goalY = snapshot.goalY;
-    return level;
-}
-
-struct ConnectResult {
-    bool ok {false};
-    std::string message;
-};
-
-// Parses "host:port" (e.g. "127.0.0.1:34900"). Returns false on malformed input.
-bool parseAddress(std::string_view input, std::string& hostOut, std::uint16_t& portOut)
-{
-    const auto colon = input.rfind(':');
-    if (colon == std::string_view::npos || colon == 0 || colon + 1 >= input.size()) {
-        return false;
-    }
-    hostOut.assign(input.substr(0, colon));
-    const auto portStr = input.substr(colon + 1);
-    int port = 0;
-    const auto* begin = portStr.data();
-    const auto* end = portStr.data() + portStr.size();
-    auto [ptr, ec] = std::from_chars(begin, end, port);
-    if (ec != std::errc {} || ptr != end || port <= 0 || port > 65535) {
-        return false;
-    }
-    portOut = static_cast<std::uint16_t>(port);
-    return true;
-}
-
-// Establishes a session-less connection (used for level browsing / saving).
-ConnectResult tryConnect(const std::string& host, std::uint16_t port)
-{
-    if (!gNetwork.session) {
-        gNetwork.session = std::make_unique<opm::client::net::SessionClient>();
-    }
-    std::string status;
-    if (!gNetwork.session->connect(host, port, 1000U, status)) {
-        return {false, "connect failed: " + status};
-    }
-    return {true, "connected"};
-}
-
-ConnectResult tryLobbyFlow(const std::string& host, std::uint16_t port)
-{
-    if (!gNetwork.session) {
-        gNetwork.session = std::make_unique<opm::client::net::SessionClient>();
-    }
-    gNetwork.connected = false;
-    gNetwork.actors.resetLocalOnly();
-
-    std::string status;
-    if (!gNetwork.session->connect(host, port, 1000U, status)) {
-        std::cout << "[client] connect status: " << status << "\n";
-        return {false, "connect failed: " + status};
-    }
-
-    std::vector<opm::client::net::LobbyInfo> lobbies;
-    if (!gNetwork.session->requestLobbyList(1000U, lobbies, status)) {
-        std::cout << "[client] lobby request status: " << status << "\n";
-        return {false, "lobby list failed: " + status};
-    }
-    if (lobbies.empty()) {
-        return {false, "no lobbies advertised by server"};
-    }
-
-    std::cout << "[client] received " << lobbies.size() << " lobby entries\n";
-    for (const auto& lobby : lobbies) {
-        std::cout << "[client] lobby=" << lobby.name << " players=" << lobby.players
-                  << "/" << lobby.capacity << "\n";
-    }
-
-    opm::client::net::JoinResult joinResult;
-    const bool joined = gNetwork.session->joinLobby(lobbies.front().name, 1000U, joinResult, status);
-    std::cout << "[client] join lobby status: " << status
-              << " success=" << (joined ? "true" : "false")
-              << " player=" << static_cast<int>(joinResult.playerIndex)
-              << " tickHz=" << joinResult.tickRateHz << "\n";
-
-    if (!joined) {
-        return {false, "join refused: " + status};
-    }
-
-    gNetwork.localPlayerIndex = joinResult.playerIndex;
-    gNetwork.actors.bindLocalToServer(joinResult.playerIndex);
-    gNetwork.actors.applyRoster(joinResult.roster, joinResult.playerIndex);
-
-    opm::client::net::LevelSnapshot snapshot;
-    if (gNetwork.session->receiveLevelSnapshot(1000U, snapshot, status)) {
-        gNetwork.networkLevel = levelFromSnapshot(snapshot);
-        opm::engine::PlayerState localSpawnState;
-        localSpawnState.position.x = snapshot.spawnX;
-        localSpawnState.position.y = snapshot.spawnY;
-        gNetwork.actors.updateLocalState(localSpawnState);
-        std::cout << "[client] level snapshot: " << snapshot.width << "x" << snapshot.height
-                  << " tiles=" << snapshot.foliage.size() << " spawn=(" << snapshot.spawnX << "," << snapshot.spawnY
-                  << ")\n";
-    } else {
-        return {false, "snapshot failed: " + status};
-    }
-
-    opm::client::net::StateUpdate update;
-    if (gNetwork.session->pollStateUpdate(1000U, update, status)) {
-        gNetwork.actors.applyStateUpdate(update, gNetwork.localPlayerIndex);
-    }
-
-    gNetwork.connected = true;
-    std::cout << "[client] network session active host=" << host << " port=" << port << "\n";
-    return {true, "connected"};
-}
-
 #ifdef OPM_CLIENT_WITH_OPENGL_STUB
-void drawDebugPlayerBody(const float x0, const float y0, const float x1, const float y1)
-{
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glColor4f(1.0F, 0.0F, 1.0F, 0.35F);
-    glBegin(GL_QUADS);
-    glVertex2f(x0, y0);
-    glVertex2f(x1, y0);
-    glVertex2f(x1, y1);
-    glVertex2f(x0, y1);
-    glEnd();
-
-    glColor3f(1.0F, 0.95F, 0.2F);
-    glBegin(GL_LINE_LOOP);
-    glVertex2f(x0, y0);
-    glVertex2f(x1, y0);
-    glVertex2f(x1, y1);
-    glVertex2f(x0, y1);
-    glEnd();
-}
-
-
-void drawPSpeedHud(const float meterValue, const bool pSpeedActive, const int framebufferWidth, const int framebufferHeight)
-{
-    (void)framebufferWidth;
-    const float clamped = std::clamp(meterValue, 0.0F, 1.0F);
-
-    const float x = 12.0F;
-    const float y = static_cast<float>(framebufferHeight) - 18.0F;
-    const float w = 74.0F;
-    const float h = 8.0F;
-
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    glColor4f(0.06F, 0.08F, 0.10F, 0.75F);
-    glBegin(GL_QUADS);
-    glVertex2f(x - 2.0F, y - 2.0F);
-    glVertex2f(x + w + 2.0F, y - 2.0F);
-    glVertex2f(x + w + 2.0F, y + h + 2.0F);
-    glVertex2f(x - 2.0F, y + h + 2.0F);
-    glEnd();
-
-    const float fillW = w * clamped;
-    if (fillW > 0.0F) {
-        if (pSpeedActive) {
-            glColor3f(1.0F, 0.86F, 0.16F);
-        } else {
-            glColor3f(0.80F, 0.22F, 0.22F);
-        }
-        glBegin(GL_QUADS);
-        glVertex2f(x, y);
-        glVertex2f(x + fillW, y);
-        glVertex2f(x + fillW, y + h);
-        glVertex2f(x, y + h);
-        glEnd();
-    }
-
-    glColor3f(0.95F, 0.95F, 0.95F);
-    glBegin(GL_LINE_LOOP);
-    glVertex2f(x, y);
-    glVertex2f(x + w, y);
-    glVertex2f(x + w, y + h);
-    glVertex2f(x, y + h);
-    glEnd();
-}
-
+using opm::client::render::drawDebugPlayerBody;
+using opm::client::render::drawPSpeedHud;
 #endif
 
 } // namespace
@@ -415,7 +214,7 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             enterPlaying(false, fallbackLevel);
         },
         .onPlayOnline = [&](const std::string& host, std::uint16_t port) -> std::string {
-            const auto result = tryLobbyFlow(host, port);
+            const auto result = tryLobbyFlow(gNetwork, host, port);
             if (!result.ok) {
                 return result.message;
             }
@@ -527,7 +326,7 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             if (!parseAddress(session.addressInput, host, port)) {
                 session.editor.statusMessage = "Invalid server address.";
             } else if (!gNetwork.session || !gNetwork.session->isConnected()) {
-                const auto cr = tryConnect(host, port);
+                const auto cr = tryConnect(gNetwork, host, port);
                 if (!cr.ok) {
                     session.editor.statusMessage = cr.message;
                 }
@@ -577,7 +376,7 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
         std::uint16_t port = 0;
         if (parseAddress(clientArgs.testAddress, host, port)) {
             std::snprintf(session.addressInput, sizeof(session.addressInput), "%s", clientArgs.testAddress.c_str());
-            const auto result = tryLobbyFlow(host, port);
+            const auto result = tryLobbyFlow(gNetwork, host, port);
             if (result.ok && gNetwork.session) {
                 // Try to set the requested level.
                 std::string status;
@@ -1506,7 +1305,7 @@ void ClientApp::enterPlaying(bool online, const opm::engine::LevelData& levelDat
 std::string ClientApp::enterLevelPicker(const std::string& host, std::uint16_t port,
                                         GameSession::PickerIntent intent)
 {
-    const auto connectResult = tryConnect(host, port);
+    const auto connectResult = tryConnect(gNetwork, host, port);
     if (!connectResult.ok) {
         return connectResult.message;
     }

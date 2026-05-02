@@ -5,8 +5,10 @@ add_executable(opm_client
 	src/tile_layer.cpp
 	src/sprite_config.cpp
 	src/game/actor_manager.cpp
+	src/game/network_session.cpp
 	src/net/message_router.cpp
 	src/render/asset_registry.cpp
+	src/render/hud.cpp
 	src/render/render_context.cpp
 	src/render/sprite.cpp
 	src/render/texture_loader.cpp
