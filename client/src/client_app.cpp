@@ -261,10 +261,12 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             opm::client::net::StateUpdate discard;
             while (gNetwork.session->pollStateUpdate(0U, discard, discardStatus)) {
                 // Mirror the phase tail into GameSession so the lobby
-                // UI can render the countdown / winner overlay.
+                // UI can render the countdown / winner / announce overlay.
                 session.gamePhase = discard.phase;
                 session.countdownTicks = discard.countdownTicks;
                 session.winnerSlot = discard.winnerSlot;
+                session.selectedMap = discard.selectedMap;
+                session.selectedTiebreak = discard.selectedTiebreak;
             }
             // If the server transitioned us into Playing while we're
             // still on the lobby screen, auto-jump into the gameplay

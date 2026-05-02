@@ -101,28 +101,36 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
 
     ImGui::Spacing();
 
+    // The server transitions PreGame through two sub-phases:
+    //   1. Voting: selectedMap is empty, players cast / withdraw votes
+    //   2. Announce: selectedMap is set, the chosen map is shown for
+    //      a few seconds before the gameplay screen takes over.
+    const bool announcing = !session.selectedMap.empty();
+
     // ===== Countdown banner =====
-    // The server starts a 60s countdown the moment the first player
-    // votes; clamps to 15s once everyone has voted. countdownTicks==0
-    // means "no one has voted yet" (waiting).
     {
         constexpr float kTicksPerSecond = 60.0F;
         const float secondsRemaining = static_cast<float>(session.countdownTicks) / kTicksPerSecond;
         const bool waiting = session.countdownTicks == 0;
-        const ImVec4 hot   (1.00F, 0.42F, 0.30F, 1.0F); // urgent red
-        const ImVec4 warn  (1.00F, 0.74F, 0.25F, 1.0F); // amber
-        const ImVec4 calm  (0.40F, 0.80F, 0.55F, 1.0F); // green
+        const ImVec4 hot   (1.00F, 0.42F, 0.30F, 1.0F);
+        const ImVec4 warn  (1.00F, 0.74F, 0.25F, 1.0F);
+        const ImVec4 calm  (0.40F, 0.80F, 0.55F, 1.0F);
         ImVec4 barColor = waiting ? dimText
+                       : (announcing ? calm
                        : (secondsRemaining <= 5.0F ? hot
-                       : (secondsRemaining <= 15.0F ? warn : calm));
+                       : (secondsRemaining <= 15.0F ? warn : calm)));
 
         ImGui::PushStyleColor(ImGuiCol_PlotHistogram, barColor);
         ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.13F, 0.16F, 0.22F, 1.0F));
+        const float scale = announcing ? 3.0F : 60.0F; // announce window is 3s, vote window is 60s
         const float barFraction = waiting
             ? 0.0F
-            : std::min(1.0F, secondsRemaining / 60.0F); // bar fills relative to the 60s window
+            : std::min(1.0F, secondsRemaining / scale);
         char overlay[64];
-        if (waiting) {
+        if (announcing) {
+            std::snprintf(overlay, sizeof(overlay),
+                "Starting in %.0fs...", std::ceil(secondsRemaining));
+        } else if (waiting) {
             std::snprintf(overlay, sizeof(overlay), "Waiting for first vote...");
         } else {
             std::snprintf(overlay, sizeof(overlay),
@@ -130,6 +138,91 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
         }
         ImGui::ProgressBar(barFraction, ImVec2(-1.0F, 28.0F), overlay);
         ImGui::PopStyleColor(2);
+    }
+
+    // ===== Announce banner =====
+    // When the server has picked the winning map, show it big in the
+    // middle of the screen instead of the voting UI.
+    if (announcing) {
+        ImGui::Spacing();
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, dimText);
+        ImGui::TextUnformatted("ROUND STARTING ON");
+        ImGui::PopStyleColor();
+        ImGui::PushStyleColor(ImGuiCol_Text, accent);
+        ImGui::SetWindowFontScale(1.6F);
+        ImGui::Text("  %s", session.selectedMap.c_str());
+        ImGui::SetWindowFontScale(1.0F);
+        ImGui::PopStyleColor();
+        if (session.selectedTiebreak) {
+            ImGui::PushStyleColor(ImGuiCol_Text, amber);
+            ImGui::TextUnformatted("  (random tiebreak among the top-voted maps)");
+            ImGui::PopStyleColor();
+        }
+        ImGui::Spacing();
+        ImGui::Spacing();
+        // Skip the rest of the voting UI — players list still renders below.
+        ImGui::Separator();
+        // Render PLAYERS section then jump to End.
+        if (ctx.net != nullptr) {
+            ImGui::Spacing();
+            char playersHeader[64];
+            std::snprintf(playersHeader, sizeof(playersHeader),
+                "PLAYERS  (%zu)", connectedCount);
+            sectionHeader(playersHeader);
+
+            constexpr ImGuiTableFlags kPTFlags =
+                ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_PadOuterX;
+            const float playerListH = std::max(80.0F,
+                std::min(180.0F, static_cast<float>(connectedCount) * 28.0F + 20.0F));
+            if (ImGui::BeginTable("##players_announce", 2, kPTFlags, ImVec2(0.0F, playerListH))) {
+                ImGui::TableSetupColumn("Player", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn("Vote", ImGuiTableColumnFlags_WidthFixed, 160.0F);
+                for (const auto& a : ctx.net->actors.actors()) {
+                    if (!a.isLocal && !a.info.connected) {
+                        continue;
+                    }
+                    const auto& info = a.info;
+                    const std::uint16_t slot = a.isLocal &&
+                        a.serverIndex != opm::client::game::kInvalidServerIndex
+                        ? a.serverIndex
+                        : info.playerIndex;
+                    const char* displayName = !info.displayName.empty()
+                        ? info.displayName.c_str()
+                        : "Player";
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    const ImVec4 swatch = a.isLocal ? accent
+                        : ImVec4(static_cast<float>(info.colorR) / 255.0F,
+                                 static_cast<float>(info.colorG) / 255.0F,
+                                 static_cast<float>(info.colorB) / 255.0F, 1.0F);
+                    inlineDot(swatch, ImGui::GetTextLineHeight() * 0.45F);
+                    ImGui::SameLine();
+                    if (a.isLocal) {
+                        ImGui::TextColored(accent, "#%u  %s  (you)",
+                            static_cast<unsigned>(slot), displayName);
+                    } else {
+                        ImGui::Text("#%u  %s", static_cast<unsigned>(slot), displayName);
+                    }
+                    ImGui::TableNextColumn();
+                    const char* voted = nullptr;
+                    for (const auto& v : session.mapVoteTally) {
+                        if (v.slotIndex == slot && !v.levelName.empty()) {
+                            voted = v.levelName.c_str();
+                            break;
+                        }
+                    }
+                    if (voted != nullptr) {
+                        ImGui::TextColored(amber, "-> %s", voted);
+                    } else {
+                        ImGui::TextDisabled("(no vote)");
+                    }
+                }
+                ImGui::EndTable();
+            }
+        }
+        ImGui::End();
+        return;
     }
 
     ImGui::Spacing();

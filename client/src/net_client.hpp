@@ -79,6 +79,8 @@ struct StateUpdate {
     opm::protocol::GamePhase phase {opm::protocol::GamePhase::PreGame};
     std::uint32_t countdownTicks {0};
     std::uint16_t winnerSlot {0xFFFFU};
+    std::string selectedMap {};
+    bool selectedTiebreak {false};
 };
 
 class SessionClient {

@@ -67,6 +67,8 @@ struct GameSession {
     opm::protocol::GamePhase gamePhase {opm::protocol::GamePhase::PreGame};
     std::uint32_t countdownTicks {0};
     std::uint16_t winnerSlot {0xFFFFU};
+    std::string selectedMap {};
+    bool selectedTiebreak {false};
 
     // LevelCreator state.
     LevelEditor editor {};

@@ -452,6 +452,8 @@ bool SessionClient::pollStateUpdate(const std::uint32_t timeoutMs, StateUpdate& 
     update.phase = payload.phase;
     update.countdownTicks = payload.countdownTicks;
     update.winnerSlot = payload.winnerSlot;
+    update.selectedMap = payload.selectedMap;
+    update.selectedTiebreak = payload.selectedTiebreak;
     update.players.clear();
     update.players.reserve(payload.players.size());
     for (const auto& player : payload.players) {

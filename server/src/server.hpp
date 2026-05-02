@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <random>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -25,6 +26,11 @@ inline constexpr std::uint32_t kTickRateHz = 60U;
 // down to 15s once every active player has voted.
 inline constexpr std::uint32_t kVoteStartCountdownTicks = kTickRateHz * 60U;
 inline constexpr std::uint32_t kAllVotedCountdownTicks  = kTickRateHz * 15U;
+// After voting ends the server picks the winning map (random pick if
+// the top vote is tied) and holds in PreGame for this many ticks so
+// every client can show a "selected: X" announcement before the
+// gameplay screen takes over.
+inline constexpr std::uint32_t kAnnounceTicks           = kTickRateHz * 3U;
 inline constexpr std::uint32_t kGameOverDisplayTicks    = kTickRateHz * 6U;  // winner display
 inline constexpr std::uint16_t kNoWinnerSlot            = 0xFFFFU;
 
@@ -58,7 +64,11 @@ private:
     void confinePlayersToSafeZone();
     [[nodiscard]] std::uint16_t firstPlayerAtGoal() const;
     void broadcastMapVoteUpdate();
-    [[nodiscard]] std::string tallyWinningMap() const;
+    // Picks the winning map (with random tiebreak across the top tier)
+    // and stores it in selectedMap_ + selectedTiebreak_. No-op if no
+    // votes have been cast — selectedMap_ stays empty and the current
+    // server level is reused.
+    void pickWinningMap();
 
     void dispatchPackets(ClientConnection& conn);
 
@@ -117,6 +127,12 @@ private:
     std::unordered_map<std::uint16_t, std::string> mapVotes_ {};
     // Levels available for voting (refreshed lazily from levelStorage_).
     std::vector<std::string> availableLevels_ {};
+    // The post-vote winning map. Empty during the voting sub-phase;
+    // set during the announce sub-phase. enterPlaying clears it.
+    std::string selectedMap_ {};
+    bool        selectedTiebreak_ {false};
+    // RNG for breaking vote ties.
+    std::mt19937 rng_ {std::random_device {}()};
 };
 
 } // namespace opm::server

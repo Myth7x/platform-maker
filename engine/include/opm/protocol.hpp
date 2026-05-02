@@ -113,6 +113,13 @@ struct StateUpdateData {
     GamePhase phase {GamePhase::PreGame};
     std::uint32_t countdownTicks {0};   // remaining ticks in current PreGame / GameOver phase
     std::uint16_t winnerSlot {0xFFFFU}; // valid only when phase == GameOver
+
+    // Announce sub-phase (still GamePhase::PreGame): the map the
+    // server picked when voting ended. Empty during the voting
+    // sub-phase. `selectedTiebreak` is true when the pick was a
+    // random tiebreak across multiple top-voted maps.
+    std::string selectedMap {};
+    bool        selectedTiebreak {false};
 };
 
 // One vote, sent from a client to the server. The server tallies and

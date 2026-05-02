@@ -495,6 +495,8 @@ std::vector<std::uint8_t> encodeStateUpdatePayload(const StateUpdateData& update
     out.push_back(static_cast<std::uint8_t>(update.phase));
     writeU32(out, update.countdownTicks);
     writeU16(out, update.winnerSlot);
+    writeString(out, update.selectedMap);
+    writeBool(out, update.selectedTiebreak);
     return out;
 }
 
@@ -562,6 +564,12 @@ StateUpdateData decodeStateUpdatePayload(const std::vector<std::uint8_t>& payloa
     }
     if (!reader.done()) {
         update.winnerSlot = reader.readU16();
+    }
+    if (!reader.done()) {
+        update.selectedMap = reader.readString();
+    }
+    if (!reader.done()) {
+        update.selectedTiebreak = reader.readBool();
     }
 
     if (!reader.done()) {

@@ -540,6 +540,8 @@ void Server::enterPreGame()
     countdownTicks_ = 0;
     winnerSlot_ = kNoWinnerSlot;
     mapVotes_.clear();
+    selectedMap_.clear();
+    selectedTiebreak_ = false;
     // Refresh the available-levels list so the vote screen reflects what
     // the storage actually holds right now.
     availableLevels_ = levelStorage_.listNames();
@@ -551,15 +553,18 @@ void Server::enterPlaying()
     gamePhase_ = opm::protocol::GamePhase::Playing;
     countdownTicks_ = 0;
     winnerSlot_ = kNoWinnerSlot;
-    // Apply the most-voted level if anyone voted; otherwise keep current.
-    const auto winningLevel = tallyWinningMap();
+    // selectedMap_ was set by pickWinningMap() during the announce
+    // sub-phase. Apply it here, then clear so the next PreGame starts
+    // fresh.
+    const std::string winningLevel = selectedMap_;
+    selectedMap_.clear();
+    selectedTiebreak_ = false;
     if (!winningLevel.empty()) {
         opm::engine::LevelData level;
         std::string err;
         if (levelStorage_.load(winningLevel, level, err)) {
             simulation_.setLevel(level);
             std::cout << "[server] phase -> Playing on voted level '" << winningLevel << "'\n";
-            // Broadcast the new level so every connected client switches.
             const auto payloadBytes = opm::protocol::encodeLevelSnapshotPayload(simulation_.level());
             WireBuilder wire;
             wire.build(opm::protocol::MessageType::LevelSnapshot, payloadBytes);
@@ -589,26 +594,49 @@ void Server::enterGameOver(std::uint16_t winnerSlot)
     std::cout << "[server] phase -> GameOver winner=" << winnerSlot << "\n";
 }
 
-std::string Server::tallyWinningMap() const
+void Server::pickWinningMap()
 {
+    selectedMap_.clear();
+    selectedTiebreak_ = false;
     if (mapVotes_.empty()) {
-        return {};
+        return;
     }
+    // Tally non-empty votes per map.
     std::unordered_map<std::string, std::uint32_t> tally;
     for (const auto& [slot, name] : mapVotes_) {
         if (!name.empty()) {
             tally[name] += 1U;
         }
     }
-    std::string best;
-    std::uint32_t bestCount = 0;
+    if (tally.empty()) {
+        return;
+    }
+    // Find the highest count.
+    std::uint32_t topCount = 0U;
     for (const auto& [name, count] : tally) {
-        if (count > bestCount) {
-            best = name;
-            bestCount = count;
+        if (count > topCount) {
+            topCount = count;
         }
     }
-    return best;
+    // Collect every map at that count — these are the contenders.
+    std::vector<std::string> contenders;
+    contenders.reserve(tally.size());
+    for (const auto& [name, count] : tally) {
+        if (count == topCount) {
+            contenders.push_back(name);
+        }
+    }
+    if (contenders.size() == 1U) {
+        selectedMap_ = contenders.front();
+        selectedTiebreak_ = false;
+    } else {
+        std::uniform_int_distribution<std::size_t> dist(0U, contenders.size() - 1U);
+        selectedMap_ = contenders[dist(rng_)];
+        selectedTiebreak_ = true;
+        std::cout << "[server] vote tied at " << topCount << " across "
+                  << contenders.size() << " maps -> randomly picked '"
+                  << selectedMap_ << "'\n";
+    }
 }
 
 void Server::tickGamePhase()
@@ -633,14 +661,26 @@ void Server::tickGamePhase()
     }
 
     switch (gamePhase_) {
-        case opm::protocol::GamePhase::PreGame:
+        case opm::protocol::GamePhase::PreGame: {
+            const bool announcing = !selectedMap_.empty();
             if (countdownTicks_ > 0U) {
                 countdownTicks_ -= 1U;
                 if (countdownTicks_ == 0U) {
-                    enterPlaying();
+                    if (announcing) {
+                        // Announce sub-phase ended -> start the round.
+                        enterPlaying();
+                    } else {
+                        // Voting sub-phase ended -> pick winning map and
+                        // hold for kAnnounceTicks so clients can show
+                        // the result before the gameplay screen takes
+                        // over.
+                        pickWinningMap();
+                        countdownTicks_ = kAnnounceTicks;
+                    }
                 }
             }
             break;
+        }
         case opm::protocol::GamePhase::Playing: {
             const auto winner = firstPlayerAtGoal();
             if (winner != kNoWinnerSlot) {
@@ -710,6 +750,8 @@ void Server::tickBroadcastState()
     data.phase = gamePhase_;
     data.countdownTicks = countdownTicks_;
     data.winnerSlot = winnerSlot_;
+    data.selectedMap = selectedMap_;
+    data.selectedTiebreak = selectedTiebreak_;
     const auto payload = opm::protocol::encodeStateUpdatePayload(data);
     broadcastWire_.build(opm::protocol::MessageType::StateUpdate, payload);
 
