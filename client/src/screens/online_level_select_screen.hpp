@@ -40,10 +40,6 @@ public:
         // withdraw the current vote. Server broadcasts the new tally.
         std::function<void(const std::string& levelName)> onCastVote;
 
-        // Refresh the level catalogue from the server. Returns error
-        // message (empty on success).
-        std::function<std::string()> onRefresh;
-
         // Disconnect from the server and return to MainMenu.
         std::function<void()> onDisconnect;
     };

@@ -146,7 +146,9 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
                     ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick)) {
                 session.onlineLevelSelected = i;
                 if (votingMode) {
-                    callbacks_.onCastVote(name);
+                    // Toggle: clicking your current vote withdraws it,
+                    // clicking any other row switches the vote.
+                    callbacks_.onCastVote(myVote ? std::string {} : name);
                 }
             }
             ImGui::TableNextColumn();
@@ -174,32 +176,12 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
 
     // ===== Actions =====
     if (votingMode) {
-        const bool canVote = session.onlineLevelSelected >= 0 &&
-            session.onlineLevelSelected < static_cast<int>(session.onlineLevels.size());
-        ImGui::BeginDisabled(!canVote);
-        // Primary action — wider, accent-colored (theme already paints
-        // it accent so just give it presence).
-        if (ImGui::Button("Cast Vote", ImVec2(180.0F, 36.0F))) {
-            const auto& name = session.onlineLevels[static_cast<std::size_t>(session.onlineLevelSelected)];
-            callbacks_.onCastVote(name);
-        }
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        if (ImGui::Button("Withdraw", ImVec2(120.0F, 36.0F))) {
-            callbacks_.onCastVote("");
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Refresh", ImVec2(110.0F, 36.0F))) {
-            const auto err = callbacks_.onRefresh();
-            if (err.empty()) {
-                session.onlineLevelStatus.clear();
-                session.onlineLevelSelected = -1;
-            } else {
-                session.onlineLevelStatus = err;
-            }
-        }
+        // No buttons in voting mode — clicking a row casts / withdraws
+        // the vote. Hint reminds the player how it works.
         ImGui::PushStyleColor(ImGuiCol_Text, dimText);
-        ImGui::TextUnformatted("Most-voted level loads when the round starts.");
+        ImGui::TextWrapped(
+            "Click a level to vote. Click your current vote again to "
+            "withdraw. Most-voted level loads when the round starts.");
         ImGui::PopStyleColor();
     } else {
         const bool canSet = session.onlineLevelSelected >= 0 &&
@@ -217,19 +199,9 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("Use Current", ImVec2(140.0F, 36.0F))) {
+        if (ImGui::Button("Use Current", ImVec2(160.0F, 36.0F))) {
             callbacks_.onUseCurrentLevel();
             session.onlineLevelStatus.clear();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Refresh", ImVec2(110.0F, 36.0F))) {
-            const auto err = callbacks_.onRefresh();
-            if (err.empty()) {
-                session.onlineLevelStatus.clear();
-                session.onlineLevelSelected = -1;
-            } else {
-                session.onlineLevelStatus = err;
-            }
         }
     }
 

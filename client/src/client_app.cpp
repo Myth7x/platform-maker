@@ -316,14 +316,6 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             std::string status;
             (void)gNetwork.session->sendMapVote(levelName, status);
         },
-        .onRefresh = [&]() -> std::string {
-            std::string status;
-            if (!gNetwork.session ||
-                !gNetwork.session->requestLevelList(2000U, session.onlineLevels, status)) {
-                return "refresh failed: " + status;
-            }
-            return {};
-        },
         .onDisconnect = [&]() {
             if (gNetwork.session) {
                 gNetwork.session->disconnect();
