@@ -3,6 +3,7 @@
 #include "game/actor_manager.hpp"
 #include "game/game_session.hpp"
 #include "game/level_editor.hpp"
+#include "screens/level_picker_screen.hpp"
 #include "screens/main_menu_screen.hpp"
 #include "net_client.hpp"
 #include "render/asset_registry.hpp"
@@ -522,6 +523,18 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
         },
         .onQuit = [&]() {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
+        },
+    });
+
+    LevelPickerScreen levelPicker(session, LevelPickerScreen::Callbacks {
+        .onEditLoadedLevel = [&](opm::engine::LevelData loaded, const std::string& name) {
+            editLoadedLevel(std::move(loaded), name);
+        },
+        .onPlayLoadedLevelOffline = [&](opm::engine::LevelData loaded) {
+            gNetwork.connected = false;
+            gNetwork.localPlayerIndex = kInvalidServerIndex;
+            gNetwork.actors.resetLocalOnly();
+            enterPlaying(false, loaded);
         },
     });
 
@@ -1385,85 +1398,8 @@ int runClientWindow(const opm::assets::AssetManifest& manifest, const opm::engin
             ScreenContext screenCtx { nullptr, renderCtx, assets, gNetwork.session.get() };
             mainMenu.renderUI(screenCtx);
         } else if (session.state == AppState::LevelPicker) {
-            const bool isEditIntent =
-                session.pickerIntent == GameSession::PickerIntent::EditOnServer;
-            const char* windowTitle = isEditIntent ? "Edit a Server Level" : "Choose a Level";
-            const char* loadLabel   = isEditIntent ? "Load & Edit"          : "Load & Play Offline";
-
-            ImGuiViewport* vp = ImGui::GetMainViewport();
-            ImGui::SetNextWindowPos(
-                ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5F, vp->WorkPos.y + vp->WorkSize.y * 0.5F),
-                ImGuiCond_Always, ImVec2(0.5F, 0.5F));
-            ImGui::SetNextWindowSize(ImVec2(460.0F, 360.0F));
-            ImGui::Begin(windowTitle, nullptr,
-                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
-
-            ImGui::Text("Levels available on server (%zu):", session.serverLevels.size());
-            ImGui::Separator();
-            ImGui::BeginChild("levels", ImVec2(0.0F, 220.0F), true);
-            for (int i = 0; i < static_cast<int>(session.serverLevels.size()); ++i) {
-                const bool selected = session.selectedLevelIndex == i;
-                if (ImGui::Selectable(session.serverLevels[i].c_str(), selected)) {
-                    session.selectedLevelIndex = i;
-                }
-                if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
-                    session.selectedLevelIndex = i;
-                    // Trigger Load via the button below by simulating the click path:
-                    // (handled below to avoid duplicating the load flow.)
-                }
-            }
-            if (session.serverLevels.empty()) {
-                ImGui::TextDisabled("(no levels — create one with the editor!)");
-            }
-            ImGui::EndChild();
-
-            ImGui::Separator();
-            const bool canLoad = session.selectedLevelIndex >= 0 &&
-                session.selectedLevelIndex < static_cast<int>(session.serverLevels.size());
-            ImGui::BeginDisabled(!canLoad);
-            if (ImGui::Button(loadLabel, ImVec2(220.0F, 32.0F))) {
-                const auto& name = session.serverLevels[static_cast<std::size_t>(session.selectedLevelIndex)];
-                opm::engine::LevelData loaded;
-                std::string status;
-                if (gNetwork.session && gNetwork.session->requestLoadLevel(name, 2000U, loaded, status)) {
-                    if (isEditIntent) {
-                        // Open the editor on the loaded level. Stay
-                        // connected so Save round-trips back to the server
-                        // without a reconnect.
-                        editLoadedLevel(std::move(loaded), name);
-                    } else {
-                        gNetwork.connected = false;
-                        gNetwork.localPlayerIndex = kInvalidServerIndex;
-                        gNetwork.actors.resetLocalOnly();
-                        enterPlaying(false, loaded);
-                    }
-                    session.pickerStatus.clear();
-                } else {
-                    session.pickerStatus = "load failed: " + status;
-                }
-            }
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            if (ImGui::Button("Refresh", ImVec2(120.0F, 32.0F))) {
-                std::string status;
-                if (!gNetwork.session ||
-                    !gNetwork.session->requestLevelList(2000U, session.serverLevels, status)) {
-                    session.pickerStatus = "refresh failed: " + status;
-                } else {
-                    session.pickerStatus.clear();
-                    session.selectedLevelIndex = -1;
-                }
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Back", ImVec2(80.0F, 32.0F))) {
-                session.state = AppState::MainMenu;
-                session.pickerStatus.clear();
-            }
-
-            if (!session.pickerStatus.empty()) {
-                ImGui::TextColored(ImVec4(1.0F, 0.55F, 0.45F, 1.0F), "%s", session.pickerStatus.c_str());
-            }
-            ImGui::End();
+            ScreenContext screenCtx { nullptr, renderCtx, assets, gNetwork.session.get() };
+            levelPicker.renderUI(screenCtx);
         } else if (session.state == AppState::OnlineLevelSelect) {
             // Drain server traffic so the recv buffer doesn't fill while the
             // user picks. Snapshots arriving here update the lobby's "current"
