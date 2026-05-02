@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "net/message_router.hpp"
 #include "net/socket_compat.hpp"
 #include "opm/engine.hpp"
 #include "opm/protocol.hpp"
@@ -115,6 +116,12 @@ public:
     [[nodiscard]] bool isConnected() const;
     void disconnect();
 
+    // Owned router for side-channel messages (RosterUpdate /
+    // LevelSnapshot / Pong). Exposed so screens can drain queued
+    // updates and read the smoothed ping.
+    [[nodiscard]] MessageRouter& router() noexcept { return router_; }
+    [[nodiscard]] const MessageRouter& router() const noexcept { return router_; }
+
 private:
     // Reads up to one chunk into recvBuffer_, blocking until either data
     // arrives, the timeout expires, or the peer closes. Returns false (and
@@ -128,11 +135,8 @@ private:
 
     socket_t fd_ {kInvalidSocket};
     std::vector<std::uint8_t> recvBuffer_ {};
-    std::uint32_t pingMs_ {0};
     std::chrono::steady_clock::time_point lastPingSentAt_ {};
-    bool hasPingSample_ {false};
-    std::vector<std::vector<opm::protocol::PlayerInfo>> pendingRosters_ {};
-    std::vector<LevelSnapshot> pendingLevelSnapshots_ {};
+    MessageRouter router_ {};
 };
 
 [[nodiscard]] std::vector<LobbyInfo> requestLobbyList(

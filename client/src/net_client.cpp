@@ -145,6 +145,29 @@ LevelSnapshot levelDataToSnapshot(const opm::engine::LevelData& level)
     return snap;
 }
 
+// Drain all currently-extractable messages, routing side-channel ones
+// (Roster / Pong, plus optionally LevelSnapshot) through the router.
+// Returns the first message the router didn't consume (which the
+// caller then handles), or false if the buffer ran out before such a
+// message was found. The optional `expected` parameter sets whether
+// LevelSnapshot is treated as a side-channel.
+//
+// Free helper rather than a member because both pollStateUpdate and
+// awaitMessage want the same behavior with slightly different "what
+// counts as side-channel" semantics.
+bool drainKnownMessages(std::vector<std::uint8_t>& recvBuffer,
+                        MessageRouter& router,
+                        opm::protocol::Message& outForCaller,
+                        bool treatLevelSnapshotAsSideChannel)
+{
+    while (tryExtractMessage(recvBuffer, outForCaller)) {
+        if (!router.dispatch(outForCaller, treatLevelSnapshotAsSideChannel)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 SessionClient::SessionClient()
@@ -330,7 +353,7 @@ bool SessionClient::receiveLevelSnapshot(const std::uint32_t timeoutMs, LevelSna
     }
 
     opm::protocol::Message message;
-    while (!tryExtractMessage(recvBuffer_, message)) {
+    while (!drainKnownMessages(recvBuffer_, router_, message, /*treatLevelSnapshotAsSideChannel=*/false)) {
         if (!pumpRecv(timeoutMs, status)) {
             return false;
         }
@@ -398,40 +421,7 @@ bool SessionClient::pollStateUpdate(const std::uint32_t timeoutMs, StateUpdate& 
     }
 
     opm::protocol::Message message;
-    while (true) {
-        if (tryExtractMessage(recvBuffer_, message)) {
-            if (message.type == opm::protocol::MessageType::RosterUpdate) {
-                pendingRosters_.push_back(opm::protocol::decodeRosterUpdatePayload(message.payload));
-                continue;
-            }
-            if (message.type == opm::protocol::MessageType::LevelSnapshot) {
-                pendingLevelSnapshots_.push_back(
-                    levelDataToSnapshot(opm::protocol::decodeLevelSnapshotPayload(message.payload)));
-                continue;
-            }
-            if (message.type == opm::protocol::MessageType::Pong) {
-                if (message.payload.size() == sizeof(std::uint64_t)) {
-                    std::uint64_t echoedNs = 0;
-                    std::memcpy(&echoedNs, message.payload.data(), sizeof(echoedNs));
-                    const auto sentAt = std::chrono::steady_clock::time_point(std::chrono::nanoseconds(echoedNs));
-                    const auto rtt = std::chrono::steady_clock::now() - sentAt;
-                    const auto rttMs = std::chrono::duration_cast<std::chrono::milliseconds>(rtt).count();
-                    if (rttMs >= 0 && rttMs < 60000) {
-                        if (!hasPingSample_) {
-                            pingMs_ = static_cast<std::uint32_t>(rttMs);
-                            hasPingSample_ = true;
-                        } else {
-                            // Exponential moving average to smooth jitter.
-                            pingMs_ = static_cast<std::uint32_t>(
-                                (pingMs_ * 3 + static_cast<std::uint32_t>(rttMs)) / 4);
-                        }
-                    }
-                }
-                continue;
-            }
-            break;
-        }
-
+    while (!drainKnownMessages(recvBuffer_, router_, message, /*treatLevelSnapshotAsSideChannel=*/true)) {
         if (!pumpRecv(timeoutMs, status)) {
             return false;
         }
@@ -486,18 +476,12 @@ bool SessionClient::pollStateUpdate(const std::uint32_t timeoutMs, StateUpdate& 
 
 void SessionClient::drainRosterUpdates(std::vector<std::vector<opm::protocol::PlayerInfo>>& out)
 {
-    out.insert(out.end(),
-        std::make_move_iterator(pendingRosters_.begin()),
-        std::make_move_iterator(pendingRosters_.end()));
-    pendingRosters_.clear();
+    router_.drainRosterUpdates(out);
 }
 
 void SessionClient::drainLevelSnapshots(std::vector<LevelSnapshot>& out)
 {
-    out.insert(out.end(),
-        std::make_move_iterator(pendingLevelSnapshots_.begin()),
-        std::make_move_iterator(pendingLevelSnapshots_.end()));
-    pendingLevelSnapshots_.clear();
+    router_.drainLevelSnapshots(out);
 }
 
 bool SessionClient::requestSetLobbyLevel(const std::string& levelName,
@@ -536,10 +520,7 @@ void SessionClient::disconnect()
     }
 
     recvBuffer_.clear();
-    pendingRosters_.clear();
-    pendingLevelSnapshots_.clear();
-    pingMs_ = 0;
-    hasPingSample_ = false;
+    router_.reset();
     lastPingSentAt_ = {};
 }
 
@@ -548,7 +529,7 @@ std::uint32_t SessionClient::getPingMs() const
     if (fd_ == kInvalidSocket) {
         return 0;
     }
-    return pingMs_;
+    return router_.pingMs();
 }
 
 bool SessionClient::isConnected() const
@@ -561,30 +542,17 @@ bool SessionClient::awaitMessage(opm::protocol::MessageType expected,
     opm::protocol::Message& out,
     std::string& status)
 {
-    while (true) {
-        if (tryExtractMessage(recvBuffer_, out)) {
-            if (out.type == opm::protocol::MessageType::RosterUpdate) {
-                pendingRosters_.push_back(opm::protocol::decodeRosterUpdatePayload(out.payload));
-                continue;
-            }
-            if (out.type == opm::protocol::MessageType::LevelSnapshot && expected != opm::protocol::MessageType::LevelSnapshot) {
-                pendingLevelSnapshots_.push_back(
-                    levelDataToSnapshot(opm::protocol::decodeLevelSnapshotPayload(out.payload)));
-                continue;
-            }
-            if (out.type == opm::protocol::MessageType::Pong) {
-                continue;
-            }
-            if (out.type == expected) {
-                return true;
-            }
-            status = "unexpected_message_type";
-            return false;
-        }
+    const bool snapshotIsSideChannel = (expected != opm::protocol::MessageType::LevelSnapshot);
+    while (!drainKnownMessages(recvBuffer_, router_, out, snapshotIsSideChannel)) {
         if (!pumpRecv(timeoutMs, status)) {
             return false;
         }
     }
+    if (out.type == expected) {
+        return true;
+    }
+    status = "unexpected_message_type";
+    return false;
 }
 
 bool SessionClient::requestLevelList(std::uint32_t timeoutMs, std::vector<std::string>& names, std::string& status)
