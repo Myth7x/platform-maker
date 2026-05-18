@@ -22,6 +22,7 @@ void handleSignal(int) { gKeepRunning = 0; }
 
 Server::Server(std::uint16_t port)
     : port_(port)
+    , accountManager_("accounts.json")
     , levelStorage_(std::filesystem::current_path() / "levels")
 {
     constexpr std::size_t kMaxLobbyPlayers = 500U;
@@ -46,6 +47,12 @@ int Server::run()
         return 1;
     }
     ScopedTimerResolution highRes;
+
+    // Initialize account manager
+    if (!accountManager_.initialize()) {
+        std::cerr << "[server] failed to initialize account manager\n";
+        return 1;
+    }
 
     if (!setupListenSocket()) {
         return 1;
@@ -188,6 +195,10 @@ bool Server::handleMessage(ClientConnection& conn,
     std::span<const std::uint8_t> payload)
 {
     switch (type) {
+        case opm::protocol::MessageType::LoginRequest:
+            return handleLoginRequest(conn, payload);
+        case opm::protocol::MessageType::UpdateProfileRequest:
+            return handleUpdateProfileRequest(conn, payload);
         case opm::protocol::MessageType::LobbyListRequest:
             return handleLobbyListRequest(conn);
         case opm::protocol::MessageType::LobbyJoinRequest:
@@ -400,7 +411,23 @@ bool Server::handleLobbySetLevelRequest(ClientConnection& conn, std::span<const 
 
     Lobby* lobby = lobbies_.find(session.lobbyName);
     if (lobby != nullptr) {
-        broadcastLevelSnapshotToLobby(*lobby);
+        std::uint32_t playerCount = lobby->playerCount();
+        std::cout << "[server] lobby '" << session.lobbyName << "' has " << playerCount << " connected player(s)\n";
+        
+        // Single-player mode: if only 1 player is in the lobby, immediately
+        // transition to RoundStarting phase (skip voting/announce phases).
+        // This keeps the server phase in sync with the client, which enters
+        // Playing immediately after receiving the LevelSnapshot.
+        if (playerCount == 1U) {
+            std::cout << "[server] single-player mode detected, transitioning to RoundStarting\n";
+            selectedMap_ = levelName;
+            selectedTiebreak_ = false;
+            enterRoundStarting();
+            // enterRoundStarting() broadcasts the level snapshot, so don't broadcast again
+        } else {
+            // Multiplayer mode: broadcast level but stay in PreGame for voting
+            broadcastLevelSnapshotToLobby(*lobby);
+        }
     }
     return true;
 }
@@ -885,6 +912,64 @@ void Server::broadcastMapVoteUpdate()
         }
         (void)conn.send(wire.view());
     }
+}
+
+bool Server::handleLoginRequest(ClientConnection& conn, std::span<const std::uint8_t> payload)
+{
+    scratchPayload_.assign(payload.begin(), payload.end());
+    const auto loginData = opm::protocol::decodeLoginRequestPayload(scratchPayload_);
+
+    opm::protocol::LoginResponseData response;
+    const auto authToken = accountManager_.login(loginData.username, loginData.password);
+
+    if (authToken.has_value()) {
+        response.ok = true;
+        response.token = authToken->token;
+        response.displayName = authToken->displayName;
+        conn.session().authToken = authToken->token;
+        conn.session().username = authToken->username;
+        conn.session().displayName = authToken->displayName;
+        std::cout << "[server] user '" << authToken->username << "' authenticated\n";
+    } else {
+        response.ok = false;
+        response.reason = "invalid_credentials";
+        std::cout << "[server] login failed for '" << loginData.username << "'\n";
+    }
+
+    const auto responsePayload = opm::protocol::encodeLoginResponsePayload(response);
+    scratchWire_.build(opm::protocol::MessageType::LoginResponse, responsePayload);
+    return conn.send(scratchWire_.view());
+}
+
+bool Server::handleUpdateProfileRequest(ClientConnection& conn, std::span<const std::uint8_t> payload)
+{
+    // Check if user is authenticated
+    if (conn.session().authToken.empty()) {
+        opm::protocol::UpdateProfileResponseData response;
+        response.ok = false;
+        response.reason = "not_authenticated";
+        const auto responsePayload = opm::protocol::encodeUpdateProfileResponsePayload(response);
+        scratchWire_.build(opm::protocol::MessageType::UpdateProfileResponse, responsePayload);
+        return conn.send(scratchWire_.view());
+    }
+
+    scratchPayload_.assign(payload.begin(), payload.end());
+    const auto profileData = opm::protocol::decodeUpdateProfileRequestPayload(scratchPayload_);
+
+    opm::protocol::UpdateProfileResponseData response;
+    if (accountManager_.updateDisplayName(conn.session().username, profileData.displayName)) {
+        response.ok = true;
+        conn.session().displayName = profileData.displayName;
+        std::cout << "[server] user '" << conn.session().username << "' updated display name to '" 
+                  << profileData.displayName << "'\n";
+    } else {
+        response.ok = false;
+        response.reason = "update_failed";
+    }
+
+    const auto responsePayload = opm::protocol::encodeUpdateProfileResponsePayload(response);
+    scratchWire_.build(opm::protocol::MessageType::UpdateProfileResponse, responsePayload);
+    return conn.send(scratchWire_.view());
 }
 
 } // namespace opm::server

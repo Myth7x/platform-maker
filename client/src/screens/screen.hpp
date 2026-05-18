@@ -14,6 +14,7 @@ namespace net    { class SessionClient; }
 namespace game   { class ActorManager; struct LevelEditor; struct NetworkSessionContext; }
 
 enum class ScreenId : std::uint8_t {
+    Login,
     MainMenu,
     LobbyBrowser,
     LevelPicker,

@@ -839,4 +839,88 @@ std::vector<MapVote> decodeMapVoteUpdatePayload(const std::vector<std::uint8_t>&
     return votes;
 }
 
+// ---- Authentication ----
+
+std::vector<std::uint8_t> encodeLoginRequestPayload(const LoginRequestData& data)
+{
+    std::vector<std::uint8_t> out;
+    writeString(out, data.username);
+    writeString(out, data.password);
+    return out;
+}
+
+LoginRequestData decodeLoginRequestPayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    LoginRequestData data;
+    data.username = reader.readString();
+    data.password = reader.readString();
+    if (!reader.done()) {
+        throw std::runtime_error("Login request payload has trailing bytes");
+    }
+    return data;
+}
+
+std::vector<std::uint8_t> encodeLoginResponsePayload(const LoginResponseData& data)
+{
+    std::vector<std::uint8_t> out;
+    writeBool(out, data.ok);
+    writeString(out, data.reason);
+    writeString(out, data.token);
+    writeString(out, data.displayName);
+    return out;
+}
+
+LoginResponseData decodeLoginResponsePayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    LoginResponseData data;
+    data.ok = reader.readBool();
+    data.reason = reader.readString();
+    data.token = reader.readString();
+    data.displayName = reader.readString();
+    if (!reader.done()) {
+        throw std::runtime_error("Login response payload has trailing bytes");
+    }
+    return data;
+}
+
+std::vector<std::uint8_t> encodeUpdateProfileRequestPayload(const UpdateProfileRequestData& data)
+{
+    std::vector<std::uint8_t> out;
+    writeString(out, data.displayName);
+    return out;
+}
+
+UpdateProfileRequestData decodeUpdateProfileRequestPayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    UpdateProfileRequestData data;
+    data.displayName = reader.readString();
+    if (!reader.done()) {
+        throw std::runtime_error("Update profile request payload has trailing bytes");
+    }
+    return data;
+}
+
+std::vector<std::uint8_t> encodeUpdateProfileResponsePayload(const UpdateProfileResponseData& data)
+{
+    std::vector<std::uint8_t> out;
+    writeBool(out, data.ok);
+    writeString(out, data.reason);
+    return out;
+}
+
+UpdateProfileResponseData decodeUpdateProfileResponsePayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    UpdateProfileResponseData data;
+    data.ok = reader.readBool();
+    data.reason = reader.readString();
+    if (!reader.done()) {
+        throw std::runtime_error("Update profile response payload has trailing bytes");
+    }
+    return data;
+}
+
 } // namespace opm::protocol

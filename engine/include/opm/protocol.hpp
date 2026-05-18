@@ -32,6 +32,10 @@ enum class MessageType : std::uint8_t {
     LobbySetLevelResponse = 20,
     MapVoteRequest = 21,    // client -> server: "I vote for level X"
     MapVoteUpdate = 22,     // server -> all in lobby: tally of votes
+    LoginRequest = 23,      // client -> server: username + password
+    LoginResponse = 24,     // server -> client: auth result + token + display name
+    UpdateProfileRequest = 25,   // client -> server: update display name
+    UpdateProfileResponse = 26,  // server -> client: profile update result
 };
 
 // Server-tracked game phase for the active session. Broadcast on every
@@ -206,5 +210,40 @@ struct LobbySetLevelResponseData {
 
 [[nodiscard]] std::vector<std::uint8_t> encodeLobbySetLevelResponsePayload(const LobbySetLevelResponseData& data);
 [[nodiscard]] LobbySetLevelResponseData decodeLobbySetLevelResponsePayload(const std::vector<std::uint8_t>& payload);
+
+// ---- Authentication ----
+
+struct LoginRequestData {
+    std::string username {};
+    std::string password {};
+};
+
+[[nodiscard]] std::vector<std::uint8_t> encodeLoginRequestPayload(const LoginRequestData& data);
+[[nodiscard]] LoginRequestData decodeLoginRequestPayload(const std::vector<std::uint8_t>& payload);
+
+struct LoginResponseData {
+    bool ok {false};
+    std::string reason {};
+    std::string token {};           // session token if successful
+    std::string displayName {};     // player's display name
+};
+
+[[nodiscard]] std::vector<std::uint8_t> encodeLoginResponsePayload(const LoginResponseData& data);
+[[nodiscard]] LoginResponseData decodeLoginResponsePayload(const std::vector<std::uint8_t>& payload);
+
+struct UpdateProfileRequestData {
+    std::string displayName {};
+};
+
+[[nodiscard]] std::vector<std::uint8_t> encodeUpdateProfileRequestPayload(const UpdateProfileRequestData& data);
+[[nodiscard]] UpdateProfileRequestData decodeUpdateProfileRequestPayload(const std::vector<std::uint8_t>& payload);
+
+struct UpdateProfileResponseData {
+    bool ok {false};
+    std::string reason {};
+};
+
+[[nodiscard]] std::vector<std::uint8_t> encodeUpdateProfileResponsePayload(const UpdateProfileResponseData& data);
+[[nodiscard]] UpdateProfileResponseData decodeUpdateProfileResponsePayload(const std::vector<std::uint8_t>& payload);
 
 } // namespace opm::protocol

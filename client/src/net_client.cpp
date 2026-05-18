@@ -369,6 +369,72 @@ bool SessionClient::receiveLevelSnapshot(const std::uint32_t timeoutMs, LevelSna
     return true;
 }
 
+bool SessionClient::requestLogin(const std::string& username, const std::string& password,
+    const std::uint32_t timeoutMs, opm::protocol::LoginResponseData& response, std::string& status)
+{
+    if (fd_ == kInvalidSocket) {
+        status = "socket_not_connected";
+        return false;
+    }
+
+    const opm::protocol::LoginRequestData request {.username = username, .password = password};
+    if (!sendMessage(fd_,
+            opm::protocol::Message {
+                .type = opm::protocol::MessageType::LoginRequest,
+                .payload = opm::protocol::encodeLoginRequestPayload(request),
+            },
+            status)) {
+        return false;
+    }
+
+    opm::protocol::Message wireResponse;
+    if (!awaitMessage(opm::protocol::MessageType::LoginResponse, timeoutMs, wireResponse, status)) {
+        return false;
+    }
+
+    response = opm::protocol::decodeLoginResponsePayload(wireResponse.payload);
+    if (!response.ok) {
+        status = response.reason.empty() ? "invalid_credentials" : response.reason;
+        return false;
+    }
+
+    status = "ok";
+    return true;
+}
+
+bool SessionClient::requestUpdateProfile(const std::string& displayName,
+    const std::uint32_t timeoutMs, std::string& status)
+{
+    if (fd_ == kInvalidSocket) {
+        status = "socket_not_connected";
+        return false;
+    }
+
+    const opm::protocol::UpdateProfileRequestData request {.displayName = displayName};
+    if (!sendMessage(fd_,
+            opm::protocol::Message {
+                .type = opm::protocol::MessageType::UpdateProfileRequest,
+                .payload = opm::protocol::encodeUpdateProfileRequestPayload(request),
+            },
+            status)) {
+        return false;
+    }
+
+    opm::protocol::Message response;
+    if (!awaitMessage(opm::protocol::MessageType::UpdateProfileResponse, timeoutMs, response, status)) {
+        return false;
+    }
+
+    const auto decoded = opm::protocol::decodeUpdateProfileResponsePayload(response.payload);
+    if (!decoded.ok) {
+        status = decoded.reason.empty() ? "profile_update_failed" : decoded.reason;
+        return false;
+    }
+
+    status = "ok";
+    return true;
+}
+
 bool SessionClient::sendMovementInput(const opm::engine::InputFrame& input, std::string& status)
 {
     if (fd_ == kInvalidSocket) {

@@ -13,6 +13,7 @@ add_executable(opm_client
 	src/render/sprite.cpp
 	src/render/texture_loader.cpp
 	src/render/theme.cpp
+	src/screens/login_screen.cpp
 	src/screens/main_menu_screen.cpp
 	src/screens/level_picker_screen.cpp
 	src/screens/lobby_browser_screen.cpp

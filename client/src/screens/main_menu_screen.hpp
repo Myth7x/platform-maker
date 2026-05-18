@@ -33,6 +33,11 @@ public:
         std::function<std::string(const std::string& host, std::uint16_t port)>
             onOpenLevelCreator;
 
+        // Update remote profile display name on the server.
+        // Returns error message (empty on success).
+        std::function<std::string(const std::string& host, std::uint16_t port, const std::string& displayName)>
+            onUpdateProfile;
+
         // Quit the app (glfwSetWindowShouldClose).
         std::function<void()> onQuit;
     };
@@ -46,6 +51,9 @@ public:
 private:
     opm::client::game::GameSession* session_;
     Callbacks callbacks_;
+    bool profileEditorOpen_ {false};
+    std::string profileEditorName_ {};
+    std::uint8_t profileEditorIconId_ {0};
 };
 
 } // namespace opm::client

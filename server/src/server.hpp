@@ -1,4 +1,5 @@
 #pragma once
+#include "game/account_manager.hpp"
 #include "game/level_storage.hpp"
 #include "game/lobby_manager.hpp"
 #include "net/connection_table.hpp"
@@ -91,6 +92,8 @@ private:
     [[nodiscard]] bool handleLevelSaveRequest(ClientConnection& conn, std::span<const std::uint8_t> payload);
     [[nodiscard]] bool handleLobbySetLevelRequest(ClientConnection& conn, std::span<const std::uint8_t> payload);
     [[nodiscard]] bool handleMapVoteRequest(ClientConnection& conn, std::span<const std::uint8_t> payload);
+    [[nodiscard]] bool handleLoginRequest(ClientConnection& conn, std::span<const std::uint8_t> payload);
+    [[nodiscard]] bool handleUpdateProfileRequest(ClientConnection& conn, std::span<const std::uint8_t> payload);
 
     void broadcastLevelSnapshotToLobby(const Lobby& lobby);
 
@@ -101,6 +104,7 @@ private:
     // ---- members ----
     std::uint16_t port_;
     ScopedSocket listenSocket_;
+    AccountManager accountManager_;
     LobbyManager lobbies_;
     ConnectionTable connections_;
     LevelStorage levelStorage_;

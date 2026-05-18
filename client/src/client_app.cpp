@@ -13,6 +13,7 @@
 #include "render/texture_loader.hpp"
 #include "screens/level_creator_screen.hpp"
 #include "screens/level_picker_screen.hpp"
+#include "screens/login_screen.hpp"
 #include "screens/lobby_browser_screen.hpp"
 #include "screens/main_menu_screen.hpp"
 #include "screens/online_level_select_screen.hpp"
@@ -197,6 +198,38 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
         return {};
     };
 
+    LoginScreen loginScreen(session, LoginScreen::Callbacks {
+        .onLogin = [&](const std::string& username, const std::string& password) -> std::string {
+            std::string host;
+            std::uint16_t port = 0;
+            if (!parseAddress(session.addressInput, host, port)) {
+                return "invalid server address";
+            }
+
+            const auto connectResult = tryConnect(gNetwork, host, port);
+            if (!connectResult.ok) {
+                return connectResult.message;
+            }
+
+            opm::protocol::LoginResponseData response;
+            std::string status;
+            if (!gNetwork.session
+                || !gNetwork.session->requestLogin(username, password, 2000U, response, status)) {
+                return "login failed: " + status;
+            }
+
+            session.username = username;
+            session.displayName = response.displayName;
+            session.authToken = response.token;
+            session.menuStatus = "";
+            session.state = AppState::MainMenu;
+            return {};
+        },
+        .onQuit = [&]() {
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
+        },
+    });
+
     MainMenuScreen mainMenu(session, MainMenuScreen::Callbacks {
         .onOpenLobbyBrowser = [&](const std::string& host, std::uint16_t port) -> std::string {
             return refreshLobbiesAndShow(host, port);
@@ -205,6 +238,22 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             // Connect (sessionless), fetch the level catalogue, then show
             // the picker which has both "Create New" and a list to load.
             return enterLevelPicker(host, port, GameSession::PickerIntent::EditOnServer);
+        },
+        .onUpdateProfile = [&](const std::string& host, std::uint16_t port,
+                               const std::string& displayName) -> std::string {
+            (void)host;
+            (void)port;
+            if (!gNetwork.session) {
+                return "not connected: please log in again";
+            }
+            if (!gNetwork.session->isConnected()) {
+                return "session disconnected: please log in again";
+            }
+            std::string status;
+            if (!gNetwork.session->requestUpdateProfile(displayName, 2000U, status)) {
+                return "profile update failed: " + status;
+            }
+            return {};
         },
         .onQuit = [&]() {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -318,10 +367,27 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             for (auto& s : snaps) {
                 gNetwork.networkLevel = levelFromSnapshot(s);
             }
+            // Drain all pending state updates to clear out any stale PreGame
+            // messages that arrived before the server transitioned to
+            // RoundStarting. This prevents playing.tick() from immediately
+            // exiting back to the lobby on the first frame due to stale updates.
+            opm::client::net::StateUpdate dummy;
+            std::string s;
+            while (gNetwork.session->pollStateUpdate(0U, dummy, s)) {
+                // Discard all pending updates; fresh ones will arrive next frame
+            }
             enterPlaying(true, gNetwork.networkLevel);
             return {};
         },
         .onUseCurrentLevel = [&]() {
+            // In single-player mode, the server auto-transitions to RoundStarting
+            // when we're idle in PreGame. Just drain pending updates and enter Playing
+            // with the current level.
+            opm::client::net::StateUpdate dummy;
+            std::string s;
+            while (gNetwork.session->pollStateUpdate(0U, dummy, s)) {
+                // Discard all pending updates; fresh ones will arrive next frame
+            }
             enterPlaying(true, gNetwork.networkLevel);
         },
         .onCastVote = [&](const std::string& levelName) {
@@ -449,6 +515,13 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
                         std::cout << "\n";
                     }
                 }
+                // Drain all pending state updates to clear out any stale PreGame
+                // messages before entering Playing mode
+                opm::client::net::StateUpdate dummy;
+                std::string s;
+                while (gNetwork.session->pollStateUpdate(0U, dummy, s)) {
+                    // Discard all pending updates
+                }
                 enterPlaying(true, gNetwork.networkLevel);
                 std::cout << "[test-mode] auto-joined online play\n";
             } else {
@@ -522,7 +595,11 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
 
         // ---- Menu / picker / creator UI ----
 #ifdef OPM_CLIENT_HAS_IMGUI
-        if (session.state == AppState::MainMenu) {
+        if (session.state == AppState::Login) {
+            ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
+                .session = gNetwork.session.get(), .window = window };
+            loginScreen.renderUI(screenCtx);
+        } else if (session.state == AppState::MainMenu) {
             ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
                 .session = gNetwork.session.get() };
             mainMenu.renderUI(screenCtx);
@@ -555,7 +632,9 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
 #endif
 
         // ---- Window title ----
-        if (session.state == AppState::MainMenu) {
+        if (session.state == AppState::Login) {
+            glfwSetWindowTitle(window, "Open Platformer Maker - Login");
+        } else if (session.state == AppState::MainMenu) {
             glfwSetWindowTitle(window, "Open Platformer Maker");
         } else if (session.state == AppState::LobbyBrowser) {
             glfwSetWindowTitle(window, "Open Platformer Maker - Lobby Browser");
@@ -612,6 +691,13 @@ void ClientApp::enterPlaying(bool online, const opm::engine::LevelData& levelDat
     session_.isOnline = online;
     session_.fromEditor = false; // caller sets true for Test Play
     session_.state = AppState::Playing;
+    // For online mode, set the game phase to RoundStarting to indicate we're
+    // about to start. This prevents the playing screen from immediately exiting
+    // back to the lobby if it receives a stale PreGame state update before the
+    // server's phase-change state update arrives.
+    if (online) {
+        session_.gamePhase = opm::protocol::GamePhase::RoundStarting;
+    }
     std::cout << "[client] entered playing mode online=" << (online ? "true" : "false")
               << " level=" << levelData.foliage.width << "x" << levelData.foliage.height << "\n";
 }

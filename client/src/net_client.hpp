@@ -95,6 +95,10 @@ public:
     [[nodiscard]] bool requestLobbyList(std::uint32_t timeoutMs, std::vector<LobbyInfo>& lobbies, std::string& status);
     [[nodiscard]] bool joinLobby(const std::string& lobbyName, std::uint32_t timeoutMs, JoinResult& result, std::string& status);
     [[nodiscard]] bool receiveLevelSnapshot(std::uint32_t timeoutMs, LevelSnapshot& snapshot, std::string& status);
+    [[nodiscard]] bool requestLogin(const std::string& username, const std::string& password,
+        std::uint32_t timeoutMs, opm::protocol::LoginResponseData& response, std::string& status);
+    [[nodiscard]] bool requestUpdateProfile(const std::string& displayName,
+        std::uint32_t timeoutMs, std::string& status);
     [[nodiscard]] bool sendMovementInput(const opm::engine::InputFrame& input, std::string& status);
     [[nodiscard]] bool pollStateUpdate(std::uint32_t timeoutMs, StateUpdate& update, std::string& status);
     void drainRosterUpdates(std::vector<std::vector<opm::protocol::PlayerInfo>>& out);

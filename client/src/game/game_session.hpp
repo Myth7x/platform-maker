@@ -13,6 +13,7 @@
 namespace opm::client::game {
 
 enum class AppState : std::uint8_t {
+    Login,
     MainMenu,
     LobbyBrowser,
     LevelPicker,
@@ -26,13 +27,19 @@ enum class AppState : std::uint8_t {
 // for the lifetime of the run; screens read and mutate it through
 // ScreenContext.
 struct GameSession {
-    AppState state {AppState::MainMenu};
+    AppState state {AppState::Login};
     bool isOnline {false};
     opm::engine::Simulation simulation;
     opm::engine::LevelData activeLevel;
     LayeredEntries entries;
     char addressInput[64] {"127.0.0.1:34900"};
     std::string menuStatus;
+
+    // Authentication state
+    std::string authToken {};       // session token from server
+    std::string username {};        // authenticated username
+    std::string displayName {};     // player's display name
+    std::uint8_t profileIconId {0}; // selected icon preset shown in navbar
 
     // LobbyBrowser state.
     struct LobbyEntry {
