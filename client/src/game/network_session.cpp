@@ -71,27 +71,36 @@ ConnectResult fetchLobbyList(NetworkSessionContext& net,
 {
     if (!net.session) {
         net.session = std::make_unique<opm::client::net::SessionClient>();
+        std::cout << "[client] Created new SessionClient for lobby fetch\n";
+    } else {
+        std::cout << "[client] Reusing existing SessionClient\n";
     }
     out.clear();
 
     std::string status;
     if (!net.session->isConnected()) {
+        std::cout << "[client] Connecting to " << host << ":" << port << " to fetch lobbies\n";
         if (!net.session->connect(host, port, 1000U, status)) {
-            std::cout << "[client] connect status: " << status << "\n";
+            std::cout << "[client] connect failed: " << status << "\n";
             return {false, "connect failed: " + status};
         }
+        std::cout << "[client] Connected successfully\n";
+    } else {
+        std::cout << "[client] Already connected to " << host << ":" << port << "\n";
     }
 
     std::vector<opm::client::net::LobbyInfo> lobbies;
+    std::cout << "[client] Requesting lobby list...\n";
     if (!net.session->requestLobbyList(1000U, lobbies, status)) {
-        std::cout << "[client] lobby request status: " << status << "\n";
+        std::cout << "[client] lobby request failed: " << status << "\n";
         return {false, "lobby list failed: " + status};
     }
+    std::cout << "[client] Received " << lobbies.size() << " lobbies from server\n";
     out.reserve(lobbies.size());
     for (const auto& l : lobbies) {
+        std::cout << "[client]   - " << l.name << " (" << l.players << "/" << l.capacity << ")\n";
         out.push_back(LobbyListing {.name = l.name, .players = l.players, .capacity = l.capacity});
     }
-    std::cout << "[client] received " << out.size() << " lobby entries\n";
     return {true, "ok"};
 }
 

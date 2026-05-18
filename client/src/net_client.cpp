@@ -280,10 +280,16 @@ bool SessionClient::requestLobbyList(const std::uint32_t timeoutMs, std::vector<
     }
 
     opm::protocol::Message response;
-    while (!tryExtractMessage(recvBuffer_, response)) {
-        if (!pumpRecv(timeoutMs, status)) {
-            return false;
+    while (true) {
+        while (!drainKnownMessages(recvBuffer_, router_, response, /*treatLevelSnapshotAsSideChannel=*/true)) {
+            if (!pumpRecv(timeoutMs, status)) {
+                return false;
+            }
         }
+        if (response.type == opm::protocol::MessageType::StateUpdate) {
+            continue; // discard stale state updates from a previous lobby session
+        }
+        break;
     }
 
     if (response.type != opm::protocol::MessageType::LobbyListResponse) {
@@ -320,10 +326,16 @@ bool SessionClient::joinLobby(const std::string& lobbyName, const std::uint32_t 
     }
 
     opm::protocol::Message response;
-    while (!tryExtractMessage(recvBuffer_, response)) {
-        if (!pumpRecv(timeoutMs, status)) {
-            return false;
+    while (true) {
+        while (!drainKnownMessages(recvBuffer_, router_, response, /*treatLevelSnapshotAsSideChannel=*/true)) {
+            if (!pumpRecv(timeoutMs, status)) {
+                return false;
+            }
         }
+        if (response.type == opm::protocol::MessageType::StateUpdate) {
+            continue; // discard stale state updates from a previous lobby session
+        }
+        break;
     }
 
     if (response.type != opm::protocol::MessageType::LobbyJoinResponse) {
@@ -464,6 +476,52 @@ bool SessionClient::sendMapVote(const std::string& levelName, std::string& statu
             .payload = opm::protocol::encodeMapVoteRequestPayload(levelName),
         },
         status);
+}
+
+bool SessionClient::sendLeaveLobby(std::string& status)
+{
+    if (fd_ == kInvalidSocket) {
+        status = "socket_not_connected";
+        return false;
+    }
+    return sendMessage(
+        fd_,
+        opm::protocol::Message {
+            .type = opm::protocol::MessageType::LeaveLobby,
+            .payload = opm::protocol::encodeLeaveLobbyPayload(),
+        },
+        status);
+}
+
+bool SessionClient::requestCreateLobby(const std::string& lobbyName,
+    const std::uint32_t timeoutMs, std::string& status)
+{
+    if (fd_ == kInvalidSocket) {
+        status = "socket_not_connected";
+        return false;
+    }
+
+    const opm::protocol::CreateLobbyRequestData request {.lobbyName = lobbyName};
+    opm::protocol::Message msg;
+    msg.type = opm::protocol::MessageType::CreateLobbyRequest;
+    msg.payload = opm::protocol::encodeCreateLobbyRequestPayload(request);
+
+    if (!sendMessage(fd_, msg, status)) {
+        return false;
+    }
+
+    opm::protocol::Message response;
+    if (!awaitMessage(opm::protocol::MessageType::CreateLobbyResponse, timeoutMs, response, status)) {
+        return false;
+    }
+
+    const auto responseData = opm::protocol::decodeCreateLobbyResponsePayload(response.payload);
+    if (!responseData.ok) {
+        status = responseData.reason;
+        return false;
+    }
+
+    return true;
 }
 
 void SessionClient::sendPingIfDue(const std::uint32_t intervalMs)

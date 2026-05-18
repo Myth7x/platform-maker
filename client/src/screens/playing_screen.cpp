@@ -536,9 +536,17 @@ void PlayingScreen::renderUI(ScreenContext& ctx)
             std::snprintf(buf, sizeof(buf),
                 "YOU WIN!\nReturning to lobby in %ds", s);
         } else if (session.winnerSlot != 0xFFFFU) {
+            const char* winnerName = "Player";
+            if (ctx.net != nullptr) {
+                if (const auto* winner = ctx.net->actors.findByServerIndex(session.winnerSlot)) {
+                    if (!winner->info.displayName.empty()) {
+                        winnerName = winner->info.displayName.c_str();
+                    }
+                }
+            }
             std::snprintf(buf, sizeof(buf),
-                "PLAYER #%u WINS\nReturning to lobby in %ds",
-                static_cast<unsigned>(session.winnerSlot), s);
+                "%s WINS!\nReturning to lobby in %ds",
+                winnerName, s);
         } else {
             std::snprintf(buf, sizeof(buf),
                 "ROUND OVER\nReturning to lobby in %ds", s);

@@ -25,6 +25,10 @@ public:
         std::function<void()> onQuit;
     };
 
+    // Get reference to address input buffer
+    [[nodiscard]] const char* getAddressInput() const;
+    void setAddressInput(const std::string& addr);
+
     LoginScreen(opm::client::game::GameSession& session, Callbacks callbacks);
 
     [[nodiscard]] ScreenId id() const noexcept override { return ScreenId::Login; }
@@ -40,6 +44,7 @@ private:
     std::string password_ {};
     std::string errorMessage_ {};
     bool isLoggingIn_ {false};
+    char addressInput_[256] = "127.0.0.1:34900";
 };
 
 } // namespace opm::client

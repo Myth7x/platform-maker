@@ -217,6 +217,10 @@ bool Server::handleMessage(ClientConnection& conn,
             return handleLobbySetLevelRequest(conn, payload);
         case opm::protocol::MessageType::MapVoteRequest:
             return handleMapVoteRequest(conn, payload);
+        case opm::protocol::MessageType::LeaveLobby:
+            return handleLeaveLobby(conn);
+        case opm::protocol::MessageType::CreateLobbyRequest:
+            return handleCreateLobbyRequest(conn, payload);
         default:
             return true;
     }
@@ -224,7 +228,14 @@ bool Server::handleMessage(ClientConnection& conn,
 
 bool Server::handleLobbyListRequest(ClientConnection& conn)
 {
-    const auto payloadBytes = opm::protocol::encodeLobbyListPayload(lobbies_.listing());
+    const auto listing = lobbies_.listing();
+    std::cout << "[server] LobbyListRequest from " << conn.session().username 
+              << ": returning " << listing.size() << " lobbies\n";
+    for (const auto& entry : listing) {
+        std::cout << "  - " << entry.name << " (" << entry.players << "/" 
+                  << entry.capacity << ")\n";
+    }
+    const auto payloadBytes = opm::protocol::encodeLobbyListPayload(listing);
     scratchWire_.build(opm::protocol::MessageType::LobbyListResponse, payloadBytes);
     return conn.send(scratchWire_.view());
 }
@@ -233,6 +244,11 @@ bool Server::handleLobbyJoinRequest(ClientConnection& conn, std::span<const std:
 {
     scratchPayload_.assign(payload.begin(), payload.end());
     const auto requestedLobby = opm::protocol::decodeLobbyJoinRequestPayload(scratchPayload_);
+
+    // Save auth state before clearing session
+    const auto savedAuthToken = conn.session().authToken;
+    const auto savedUsername = conn.session().username;
+    const auto savedDisplayName = conn.session().displayName;
 
     // Cleanly leave any existing lobby. Also release the simulation slot so
     // it stops participating in physics until the client lands in a new lobby.
@@ -268,7 +284,13 @@ bool Server::handleLobbyJoinRequest(ClientConnection& conn, std::span<const std:
     response.playerIndex = *assignedSlot;
     response.reason = "joined";
     response.roster = lobby->roster();
-    conn.session() = PeerSession {.lobbyName = lobby->name, .playerIndex = *assignedSlot};
+    conn.session() = PeerSession {
+        .lobbyName = lobby->name,
+        .playerIndex = *assignedSlot,
+        .authToken = savedAuthToken,
+        .username = savedUsername,
+        .displayName = savedDisplayName
+    };
     // Activate the simulation slot at the level spawn so it participates in
     // physics + player-vs-player collision.
     simulation_.respawnPlayer(*assignedSlot);
@@ -460,7 +482,21 @@ bool Server::sendLevelSnapshot(ClientConnection& conn)
 
 void Server::broadcastRoster(const Lobby& lobby)
 {
-    const auto roster = lobby.roster();
+    auto roster = lobby.roster();
+    
+    // Update each roster entry with authenticated displayName from connection if available
+    for (auto& player : roster) {
+        const auto fd = lobby.slots[player.playerIndex];
+        if (fd != kInvalidSocket) {
+            if (auto* conn = connections_.find(fd)) {
+                const auto& session = conn->session();
+                if (!session.displayName.empty()) {
+                    player.displayName = session.displayName;
+                }
+            }
+        }
+    }
+    
     const auto payloadBytes = opm::protocol::encodeRosterUpdatePayload(roster);
     WireBuilder wire;
     wire.build(opm::protocol::MessageType::RosterUpdate, payloadBytes);
@@ -969,6 +1005,52 @@ bool Server::handleUpdateProfileRequest(ClientConnection& conn, std::span<const 
 
     const auto responsePayload = opm::protocol::encodeUpdateProfileResponsePayload(response);
     scratchWire_.build(opm::protocol::MessageType::UpdateProfileResponse, responsePayload);
+    return conn.send(scratchWire_.view());
+}
+
+bool Server::handleLeaveLobby(ClientConnection& conn)
+{
+    // Remove the player from any lobby they are in
+    // This allows them to rejoin from the main menu without disconnecting
+    lobbies_.removeFromAll(conn.fd());
+    return true;
+}
+
+bool Server::handleCreateLobbyRequest(ClientConnection& conn, std::span<const std::uint8_t> payload)
+{
+    // Check if player is authenticated
+    if (conn.session().authToken.empty() || conn.session().username.empty()) {
+        opm::protocol::CreateLobbyResponseData response;
+        response.ok = false;
+        response.reason = "not_authenticated";
+        const auto responsePayload = opm::protocol::encodeCreateLobbyResponsePayload(response);
+        scratchWire_.build(opm::protocol::MessageType::CreateLobbyResponse, responsePayload);
+        return conn.send(scratchWire_.view());
+    }
+
+    scratchPayload_.assign(payload.begin(), payload.end());
+    const auto requestData = opm::protocol::decodeCreateLobbyRequestPayload(scratchPayload_);
+
+    opm::protocol::CreateLobbyResponseData response;
+    
+    // Validate lobby name
+    if (requestData.lobbyName.empty() || requestData.lobbyName.length() > 64) {
+        response.ok = false;
+        response.reason = "invalid_lobby_name";
+    } else {
+        // Try to create the lobby
+        if (lobbies_.create(requestData.lobbyName)) {
+            response.ok = true;
+            std::cout << "[server] user '" << conn.session().username << "' created lobby '" 
+                      << requestData.lobbyName << "'\n";
+        } else {
+            response.ok = false;
+            response.reason = "lobby_already_exists";
+        }
+    }
+
+    const auto responsePayload = opm::protocol::encodeCreateLobbyResponsePayload(response);
+    scratchWire_.build(opm::protocol::MessageType::CreateLobbyResponse, responsePayload);
     return conn.send(scratchWire_.view());
 }
 

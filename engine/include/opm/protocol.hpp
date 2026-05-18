@@ -36,6 +36,9 @@ enum class MessageType : std::uint8_t {
     LoginResponse = 24,     // server -> client: auth result + token + display name
     UpdateProfileRequest = 25,   // client -> server: update display name
     UpdateProfileResponse = 26,  // server -> client: profile update result
+    LeaveLobby = 27,        // client -> server: leave current lobby (stay connected)
+    CreateLobbyRequest = 28,     // client -> server: create new lobby with name
+    CreateLobbyResponse = 29,    // server -> client: create result
 };
 
 // Server-tracked game phase for the active session. Broadcast on every
@@ -245,5 +248,25 @@ struct UpdateProfileResponseData {
 
 [[nodiscard]] std::vector<std::uint8_t> encodeUpdateProfileResponsePayload(const UpdateProfileResponseData& data);
 [[nodiscard]] UpdateProfileResponseData decodeUpdateProfileResponsePayload(const std::vector<std::uint8_t>& payload);
+
+// Leave lobby: no payload needed
+[[nodiscard]] inline std::vector<std::uint8_t> encodeLeaveLobbyPayload() { return {}; }
+inline void decodeLeaveLobbyPayload(const std::vector<std::uint8_t>&) {}
+
+// Create lobby
+struct CreateLobbyRequestData {
+    std::string lobbyName {};
+};
+
+[[nodiscard]] std::vector<std::uint8_t> encodeCreateLobbyRequestPayload(const CreateLobbyRequestData& data);
+[[nodiscard]] CreateLobbyRequestData decodeCreateLobbyRequestPayload(const std::vector<std::uint8_t>& payload);
+
+struct CreateLobbyResponseData {
+    bool ok {false};
+    std::string reason {};
+};
+
+[[nodiscard]] std::vector<std::uint8_t> encodeCreateLobbyResponsePayload(const CreateLobbyResponseData& data);
+[[nodiscard]] CreateLobbyResponseData decodeCreateLobbyResponsePayload(const std::vector<std::uint8_t>& payload);
 
 } // namespace opm::protocol

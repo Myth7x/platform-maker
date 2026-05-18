@@ -40,8 +40,9 @@ public:
         // withdraw the current vote. Server broadcasts the new tally.
         std::function<void(const std::string& levelName)> onCastVote;
 
-        // Disconnect from the server and return to MainMenu.
-        std::function<void()> onDisconnect;
+        // Leave the lobby while keeping the server connection active.
+        // Returns to MainMenu.
+        std::function<void()> onLeaveLobby;
     };
 
     OnlineLevelSelectScreen(opm::client::game::GameSession& session, Callbacks callbacks);

@@ -124,6 +124,13 @@ public:
     // server broadcasts the tally back via MapVoteUpdate.
     [[nodiscard]] bool sendMapVote(const std::string& levelName, std::string& status);
 
+    // Send LeaveLobby message (fire-and-forget).
+    [[nodiscard]] bool sendLeaveLobby(std::string& status);
+
+    // Request to create a new lobby.
+    [[nodiscard]] bool requestCreateLobby(const std::string& lobbyName,
+        std::uint32_t timeoutMs, std::string& status);
+
     // Returns and clears any LevelSnapshot messages received since the last
     // call (during gameplay polls).
     void drainLevelSnapshots(std::vector<LevelSnapshot>& out);

@@ -2,6 +2,8 @@
 #include "client_app.hpp"
 #include "imgui.h"
 
+#include <cstring>
+
 namespace opm::client {
 
 LoginScreen::LoginScreen(opm::client::game::GameSession& session, Callbacks callbacks)
@@ -29,43 +31,51 @@ void LoginScreen::renderUI(ScreenContext& ctx)
     // Center the login form
     const float windowWidth = ImGui::GetWindowWidth();
     const float windowHeight = ImGui::GetWindowHeight();
-    const float formWidth = 400.0F;
-    const float formHeight = 250.0F;
+    const float formWidth = 320.0F;
+    const float formHeight = 280.0F;
 
     ImGui::SetCursorPos(ImVec2((windowWidth - formWidth) * 0.5F, (windowHeight - formHeight) * 0.5F));
 
-    ImGui::BeginChild("##LoginForm", ImVec2(formWidth, formHeight), true);
+    // Modern style: subtle background with no border
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12F, 0.15F, 0.20F, 0.8F));
+    ImGui::BeginChild("##LoginForm", ImVec2(formWidth, formHeight), false, ImGuiWindowFlags_NoScrollbar);
+    ImGui::PopStyleColor();
 
-    ImGui::Spacing();
-    ImGui::Text("Open Platformer Maker");
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
+    // Padding around form content
+    ImGui::Indent(16.0F);
 
-    // Username input - use fixed buffer and store in username_
-    static char usernameBuffer[128] {};
+    // Server address input
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0F);
+    ImGui::Text("Server:");
+    ImGui::SetNextItemWidth(-32.0F);
+    ImGui::InputText("##Address", addressInput_, sizeof(addressInput_));
+
+    // Username input
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 12.0F);
     ImGui::Text("Username:");
-    ImGui::SetNextItemWidth(-1);
+    ImGui::SetNextItemWidth(-32.0F);
+    static char usernameBuffer[128] {};
     ImGui::InputText("##Username", usernameBuffer, sizeof(usernameBuffer));
     username_ = usernameBuffer;
 
-    // Password input - use fixed buffer and store in password_
-    static char passwordBuffer[128] {};
+    // Password input
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 12.0F);
     ImGui::Text("Password:");
-    ImGui::SetNextItemWidth(-1);
+    ImGui::SetNextItemWidth(-32.0F);
+    static char passwordBuffer[128] {};
     ImGui::InputText("##Password", passwordBuffer, sizeof(passwordBuffer), ImGuiInputTextFlags_Password);
     password_ = passwordBuffer;
 
-    ImGui::Spacing();
-
     // Error message
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0F);
     if (!errorMessage_.empty()) {
-        ImGui::TextColored(ImVec4(1.0F, 0.0F, 0.0F, 1.0F), "Error: %s", errorMessage_.c_str());
-        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(1.0F, 0.4F, 0.4F, 1.0F), "%s", errorMessage_.c_str());
     }
 
-    // Login button
-    if (ImGui::Button("Login", ImVec2(100, 30))) {
+    // Buttons
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 12.0F);
+    const float buttonWidth = (formWidth - 50.0F) * 0.5F;
+    if (ImGui::Button("Login", ImVec2(buttonWidth, 32.0F))) {
         if (!username_.empty() && !password_.empty()) {
             isLoggingIn_ = true;
             errorMessage_ = callbacks_.onLogin(username_, password_);
@@ -83,17 +93,32 @@ void LoginScreen::renderUI(ScreenContext& ctx)
     }
 
     ImGui::SameLine();
-    if (ImGui::Button("Quit", ImVec2(100, 30))) {
+    if (ImGui::Button("Quit", ImVec2(buttonWidth, 32.0F))) {
         callbacks_.onQuit();
     }
 
-    // Quick test credentials hint (debug only)
-    ImGui::Spacing();
+    // Demo hint
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 12.0F);
     ImGui::TextDisabled("Demo: super / super");
+
+    ImGui::Unindent(16.0F);
 
     ImGui::EndChild();
 
     ImGui::End();
+}
+
+const char* LoginScreen::getAddressInput() const
+{
+    return addressInput_;
+}
+
+void LoginScreen::setAddressInput(const std::string& addr)
+{
+    if (addr.size() < sizeof(addressInput_)) {
+        std::strncpy(addressInput_, addr.c_str(), sizeof(addressInput_) - 1);
+        addressInput_[sizeof(addressInput_) - 1] = '\0';
+    }
 }
 
 } // namespace opm::client

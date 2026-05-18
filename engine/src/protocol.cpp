@@ -923,4 +923,42 @@ UpdateProfileResponseData decodeUpdateProfileResponsePayload(const std::vector<s
     return data;
 }
 
+std::vector<std::uint8_t> encodeCreateLobbyRequestPayload(const CreateLobbyRequestData& data)
+{
+    std::vector<std::uint8_t> out;
+    writeString(out, data.lobbyName);
+    return out;
+}
+
+CreateLobbyRequestData decodeCreateLobbyRequestPayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    CreateLobbyRequestData data;
+    data.lobbyName = reader.readString();
+    if (!reader.done()) {
+        throw std::runtime_error("Create lobby request payload has trailing bytes");
+    }
+    return data;
+}
+
+std::vector<std::uint8_t> encodeCreateLobbyResponsePayload(const CreateLobbyResponseData& data)
+{
+    std::vector<std::uint8_t> out;
+    writeBool(out, data.ok);
+    writeString(out, data.reason);
+    return out;
+}
+
+CreateLobbyResponseData decodeCreateLobbyResponsePayload(const std::vector<std::uint8_t>& payload)
+{
+    PayloadReader reader(payload);
+    CreateLobbyResponseData data;
+    data.ok = reader.readBool();
+    data.reason = reader.readString();
+    if (!reader.done()) {
+        throw std::runtime_error("Create lobby response payload has trailing bytes");
+    }
+    return data;
+}
+
 } // namespace opm::protocol

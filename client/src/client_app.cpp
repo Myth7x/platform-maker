@@ -180,26 +180,12 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
     // still live as inline branches below until they're migrated.
     // Refresh the cached lobby list and transition into the LobbyBrowser
     // screen. Used by both MainMenu and the LobbyBrowser's Refresh button.
-    auto refreshLobbiesAndShow = [&](const std::string& host, std::uint16_t port) -> std::string {
-        std::vector<opm::client::game::LobbyListing> listings;
-        const auto res = fetchLobbyList(gNetwork, host, port, listings);
-        if (!res.ok) {
-            return res.message;
-        }
-        session.availableLobbies.clear();
-        session.availableLobbies.reserve(listings.size());
-        for (const auto& l : listings) {
-            session.availableLobbies.push_back(GameSession::LobbyEntry {
-                .name = l.name, .players = l.players, .capacity = l.capacity});
-        }
-        session.selectedLobbyIndex = -1;
-        session.lobbyBrowserStatus.clear();
-        session.state = AppState::LobbyBrowser;
-        return {};
-    };
-
     LoginScreen loginScreen(session, LoginScreen::Callbacks {
         .onLogin = [&](const std::string& username, const std::string& password) -> std::string {
+            // Store the server address from login screen into session
+            session.addressInput[0] = '\0';
+            strncpy(session.addressInput, loginScreen.getAddressInput(), sizeof(session.addressInput) - 1);
+            
             std::string host;
             std::uint16_t port = 0;
             if (!parseAddress(session.addressInput, host, port)) {
@@ -231,8 +217,21 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
     });
 
     MainMenuScreen mainMenu(session, MainMenuScreen::Callbacks {
-        .onOpenLobbyBrowser = [&](const std::string& host, std::uint16_t port) -> std::string {
-            return refreshLobbiesAndShow(host, port);
+        .onJoinLobby = [&](const std::string& host, std::uint16_t port,
+                            const std::string& lobbyName) -> std::string {
+            const auto res = joinNamedLobby(gNetwork, host, port, lobbyName);
+            if (!res.ok) {
+                return res.message;
+            }
+            std::string status;
+            session.onlineLevels.clear();
+            session.onlineLevelSelected = -1;
+            session.onlineLevelStatus.clear();
+            if (gNetwork.session) {
+                (void)gNetwork.session->requestLevelList(2000U, session.onlineLevels, status);
+            }
+            session.state = AppState::OnlineLevelSelect;
+            return {};
         },
         .onOpenLevelCreator = [&](const std::string& host, std::uint16_t port) -> std::string {
             // Connect (sessionless), fetch the level catalogue, then show
@@ -254,6 +253,24 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
                 return "profile update failed: " + status;
             }
             return {};
+        },
+        .onLogout = [&]() {
+            // Disconnect from server and clear authentication
+            if (gNetwork.session) {
+                gNetwork.session->disconnect();
+            }
+            gNetwork.session = nullptr;
+            gNetwork.connected = false;
+            gNetwork.localPlayerIndex = opm::client::game::kInvalidServerIndex;
+            
+            // Clear auth state
+            session.authToken.clear();
+            session.username.clear();
+            session.displayName.clear();
+            session.profileIconId = 0;
+            
+            // Return to login screen
+            session.state = opm::client::game::AppState::Login;
         },
         .onQuit = [&]() {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -397,11 +414,12 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             std::string status;
             (void)gNetwork.session->sendMapVote(levelName, status);
         },
-        .onDisconnect = [&]() {
+        .onLeaveLobby = [&]() {
+            // Send LeaveLobby message to server to properly leave without disconnecting
             if (gNetwork.session) {
-                gNetwork.session->disconnect();
+                std::string status;
+                (void)gNetwork.session->sendLeaveLobby(status);
             }
-            gNetwork.connected = false;
             gNetwork.localPlayerIndex = kInvalidServerIndex;
             gNetwork.actors.resetLocalOnly();
             session.state = AppState::MainMenu;
@@ -601,7 +619,7 @@ int ClientApp::runWindow(const opm::assets::AssetManifest& manifest, const opm::
             loginScreen.renderUI(screenCtx);
         } else if (session.state == AppState::MainMenu) {
             ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,
-                .session = gNetwork.session.get() };
+                .session = gNetwork.session.get(), .net = &gNetwork };
             mainMenu.renderUI(screenCtx);
         } else if (session.state == AppState::LobbyBrowser) {
             ScreenContext screenCtx { .app = nullptr, .render = renderCtx, .assets = assets,

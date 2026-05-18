@@ -91,9 +91,15 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
     const ImVec4 dimText    = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
 
     // ===== Header =====
-    ImGui::Text("You are player");
-    ImGui::SameLine();
-    ImGui::TextColored(accent, "#%d", localSlot);
+    const char* localDisplayName = "Player";
+    if (ctx.net != nullptr) {
+        if (const auto* localActor = ctx.net->actors.localActor()) {
+            if (!localActor->info.displayName.empty()) {
+                localDisplayName = localActor->info.displayName.c_str();
+            }
+        }
+    }
+    ImGui::TextColored(accent, "%s", localDisplayName);
     ImGui::SameLine();
     ImGui::TextDisabled(votingMode
         ? "  -  multiplayer mode (vote to pick the next level)"
@@ -416,8 +422,8 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-    if (ImGui::Button("Disconnect", ImVec2(140.0F, 32.0F))) {
-        callbacks_.onDisconnect();
+    if (ImGui::Button("Leave Lobby", ImVec2(140.0F, 32.0F))) {
+        callbacks_.onLeaveLobby();
         session.onlineLevelStatus.clear();
     }
 

@@ -18,6 +18,9 @@ public:
     [[nodiscard]] Lobby& at(std::size_t i) noexcept { return lobbies_[i]; }
     [[nodiscard]] auto& all() noexcept { return lobbies_; }
 
+    // Creates a new lobby with the given name. Returns true if successful, false if a lobby with that name already exists.
+    [[nodiscard]] bool create(std::string_view name);
+
     // Returns indices of lobbies whose membership changed.
     std::vector<std::size_t> removeFromAll(socket_t fd);
 

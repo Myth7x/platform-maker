@@ -94,6 +94,8 @@ private:
     [[nodiscard]] bool handleMapVoteRequest(ClientConnection& conn, std::span<const std::uint8_t> payload);
     [[nodiscard]] bool handleLoginRequest(ClientConnection& conn, std::span<const std::uint8_t> payload);
     [[nodiscard]] bool handleUpdateProfileRequest(ClientConnection& conn, std::span<const std::uint8_t> payload);
+    [[nodiscard]] bool handleLeaveLobby(ClientConnection& conn);
+    [[nodiscard]] bool handleCreateLobbyRequest(ClientConnection& conn, std::span<const std::uint8_t> payload);
 
     void broadcastLevelSnapshotToLobby(const Lobby& lobby);
 

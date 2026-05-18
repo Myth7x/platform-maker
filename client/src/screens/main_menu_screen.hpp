@@ -21,11 +21,10 @@ namespace opm::client {
 class MainMenuScreen final : public Screen {
 public:
     struct Callbacks {
-        // Open the lobby browser (connect to server + fetch lobby list,
-        // then transition to LobbyBrowser screen). Returns error
-        // message (empty on success).
-        std::function<std::string(const std::string& host, std::uint16_t port)>
-            onOpenLobbyBrowser;
+        // Join a named lobby directly. Returns error message (empty on success).
+        std::function<std::string(const std::string& host, std::uint16_t port,
+                                  const std::string& lobbyName)>
+            onJoinLobby;
 
         // Open the level studio: a list of server-stored levels with a
         // "Create New Level" button. Returns error message (empty on
@@ -37,6 +36,9 @@ public:
         // Returns error message (empty on success).
         std::function<std::string(const std::string& host, std::uint16_t port, const std::string& displayName)>
             onUpdateProfile;
+
+        // Logout: clear authentication and return to login screen.
+        std::function<void()> onLogout;
 
         // Quit the app (glfwSetWindowShouldClose).
         std::function<void()> onQuit;
@@ -54,6 +56,9 @@ private:
     bool profileEditorOpen_ {false};
     std::string profileEditorName_ {};
     std::uint8_t profileEditorIconId_ {0};
+    bool createLobbyDialogOpen_ {false};
+    std::string createLobbyName_ {};
+    std::string createLobbyStatus_ {};
 };
 
 } // namespace opm::client
