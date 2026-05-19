@@ -19,6 +19,7 @@ opm::engine::PlayerState remoteStateToPlayerState(const opm::client::net::Remote
     p.pSpeedMeter = s.pSpeedMeter;
     p.style = static_cast<opm::engine::PlayerStyle>(s.style);
     p.powerupTransitionFrames = s.powerupTransitionFrames;
+    p.deathFrames = s.isDying ? 1U : 0U;
     p.invincibilityFrames = s.invincibilityFrames;
     return p;
 }

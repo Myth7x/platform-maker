@@ -6,6 +6,7 @@
 
 #ifdef OPM_CLIENT_HAS_IMGUI
 #include <imgui.h>
+#include "render/ui_widgets.hpp"
 #endif
 
 #include <algorithm>
@@ -33,28 +34,7 @@ ScreenTransition OnlineLevelSelectScreen::tick(ScreenContext&, double)
 
 #ifdef OPM_CLIENT_HAS_IMGUI
 namespace {
-
-// Small section header: dim uppercase label + thin separator.
-void sectionHeader(const char* label)
-{
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextUnformatted(label);
-    ImGui::PopStyleColor();
-    ImGui::Separator();
-}
-
-// Filled circle drawn inline at the current cursor; advances the cursor
-// past it so the next SameLine'd widget aligns vertically with the dot.
-void inlineDot(const ImVec4& color, float radius)
-{
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 cur = ImGui::GetCursorScreenPos();
-    const float lineH = ImGui::GetTextLineHeight();
-    const ImVec2 center(cur.x + radius, cur.y + lineH * 0.5F);
-    dl->AddCircleFilled(center, radius, ImGui::ColorConvertFloat4ToU32(color));
-    ImGui::Dummy(ImVec2(radius * 2.0F + 8.0F, lineH));
-}
-
+// (Local helpers removed: OpmSectionHeader and OpmStatusDot now used directly)
 } // namespace
 #endif
 
@@ -175,7 +155,7 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
             char playersHeader[64];
             std::snprintf(playersHeader, sizeof(playersHeader),
                 "PLAYERS  (%zu)", connectedCount);
-            sectionHeader(playersHeader);
+            opm::client::render::OpmSectionHeader(playersHeader);
 
             constexpr ImGuiTableFlags kPTFlags =
                 ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_PadOuterX;
@@ -202,7 +182,7 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
                         : ImVec4(static_cast<float>(info.colorR) / 255.0F,
                                  static_cast<float>(info.colorG) / 255.0F,
                                  static_cast<float>(info.colorB) / 255.0F, 1.0F);
-                    inlineDot(swatch, ImGui::GetTextLineHeight() * 0.45F);
+                    opm::client::render::OpmStatusDot(swatch, ImGui::GetTextLineHeight() * 0.45F);
                     ImGui::SameLine();
                     if (a.isLocal) {
                         ImGui::TextColored(accent, "#%u  %s  (you)",
@@ -256,7 +236,7 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
     };
 
     // ===== Levels =====
-    sectionHeader(votingMode ? "VOTE FOR A LEVEL" : "LEVELS");
+    opm::client::render::OpmSectionHeader(votingMode ? "VOTE FOR A LEVEL" : "LEVELS");
 
     constexpr ImGuiTableFlags kTableFlags =
         ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
@@ -357,7 +337,7 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
         char playersHeader[64];
         std::snprintf(playersHeader, sizeof(playersHeader),
             "PLAYERS  (%zu)", connectedCount);
-        sectionHeader(playersHeader);
+        opm::client::render::OpmSectionHeader(playersHeader);
 
         const float playerListH = std::max(80.0F,
             std::min(180.0F, static_cast<float>(connectedCount) * 28.0F + 20.0F));
@@ -386,7 +366,7 @@ void OnlineLevelSelectScreen::renderUI(ScreenContext& ctx)
                     : ImVec4(static_cast<float>(info.colorR) / 255.0F,
                              static_cast<float>(info.colorG) / 255.0F,
                              static_cast<float>(info.colorB) / 255.0F, 1.0F);
-                inlineDot(swatch, ImGui::GetTextLineHeight() * 0.45F);
+                opm::client::render::OpmStatusDot(swatch, ImGui::GetTextLineHeight() * 0.45F);
                 ImGui::SameLine();
                 if (a.isLocal) {
                     ImGui::TextColored(accent, "#%u  %s  (you)",

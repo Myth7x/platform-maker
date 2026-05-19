@@ -57,6 +57,7 @@ struct RemotePlayerState {
     std::uint8_t style {0};
     std::uint8_t powerupTransitionFrames {0};
     std::uint8_t invincibilityFrames {0};
+    bool isDying {false};
 };
 
 struct RemoteActorState {

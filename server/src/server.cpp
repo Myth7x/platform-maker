@@ -535,6 +535,8 @@ void Server::broadcastRoster(const Lobby& lobby)
                 const auto& session = conn->session();
                 if (!session.displayName.empty()) {
                     player.displayName = session.displayName;
+                } else if (!session.username.empty()) {
+                    player.displayName = session.username;
                 }
             }
         }
@@ -575,7 +577,10 @@ void Server::tickStepSimulation()
     for (auto& input : pendingInputs_) {
         input.frameIndex = simulation_.state().tick;
     }
-    simulation_.step(pendingInputs_);
+    // During GameOver, freeze the simulation (don't step, so positions stay frozen).
+    if (gamePhase_ != opm::protocol::GamePhase::GameOver) {
+        simulation_.step(pendingInputs_);
+    }
     for (auto& input : pendingInputs_) {
         // Only clear the one-shot "just pressed" flag. Held-state flags
         // (runHeld, moveLeft, moveRight, jumpHeld, crouchHeld) are
@@ -866,6 +871,7 @@ void Server::tickBroadcastState()
             .style = static_cast<std::uint8_t>(s.style),
             .powerupTransitionFrames = s.powerupTransitionFrames,
             .invincibilityFrames = s.invincibilityFrames,
+            .isDying = (s.deathFrames > 0U),
         });
     }
     data.actors.reserve(simulation_.state().actors.size());

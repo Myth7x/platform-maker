@@ -43,7 +43,17 @@ void destroyTileTextures(std::unordered_map<std::string, GLuint>& textures);
 void drawTextureQuad(const Texture2D& tex,
                      bool flipX,
                      float x0, float y0,
-                     float x1, float y1);
+                     float x1, float y1,
+                     bool flipY = false);
+
+// Like drawTextureQuad but multiplies each fragment by (r, g, b, a).
+// Set r=g=b=0 to render a black silhouette (useful for drop-shadow passes).
+void drawTextureQuadTinted(const Texture2D& tex,
+                           bool flipX,
+                           float x0, float y0,
+                           float x1, float y1,
+                           float r, float g, float b, float a,
+                           bool flipY = false);
 
 } // namespace opm::client::render
 

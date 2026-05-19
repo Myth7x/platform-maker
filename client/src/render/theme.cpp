@@ -24,17 +24,17 @@ void applyMarioMaker2()
     // ---- Sizes / shape ----
     // Generous rounded corners + roomy padding give the cheerful,
     // friendly feel without compromising density.
-    s.WindowRounding     = 6.0F;
-    s.ChildRounding      = 6.0F;
+    s.WindowRounding     = 12.0F;
+    s.ChildRounding      = 10.0F;
     s.FrameRounding      = 8.0F;
-    s.PopupRounding      = 6.0F;
+    s.PopupRounding      = 10.0F;
     s.GrabRounding       = 4.0F;
-    s.ScrollbarRounding  = 4.0F;
-    s.TabRounding        = 6.0F;
-    // 1px window border keeps anchored side panels distinct from the
-    // GL viewport background (which can be similarly toned).
-    s.WindowBorderSize   = 1.0F;
-    s.ChildBorderSize    = 1.0F;
+    s.ScrollbarRounding  = 6.0F;
+    s.TabRounding        = 8.0F;
+    // Borders replaced by drop shadows drawn via ImDrawList; keeping
+    // borders at 0 avoids a visible seam between panels and the GL canvas.
+    s.WindowBorderSize   = 0.0F;
+    s.ChildBorderSize    = 0.0F;
     s.FrameBorderSize    = 0.0F;
     s.TabBorderSize      = 0.0F;
     s.WindowPadding      = ImVec2(14.0F, 12.0F);
@@ -131,6 +131,7 @@ void applyMarioMaker2()
 
     // Suppress unused warnings on theme constants we may not always wire.
     (void)kAmberAct;
+    (void)kAmberHov;
 }
 
 } // namespace

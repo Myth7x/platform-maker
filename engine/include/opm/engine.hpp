@@ -67,6 +67,10 @@ struct PlayerState {
     // (no freeze) but enemy contact is ignored, and the renderer blinks
     // the sprite on/off so the i-frames read visually.
     std::uint8_t invincibilityFrames {0};
+    // Death animation counter. While > 0, the player is in a Mario-style
+    // death bounce (physics-driven upward bounce, no tile collision, no input).
+    // On reaching 0, the player respawns at the level spawn point.
+    std::uint8_t deathFrames {0};
     std::uint8_t jumpHoldFrames {0};
     std::uint8_t jumpBufferFrames {0};
     std::uint8_t coyoteFrames {0};

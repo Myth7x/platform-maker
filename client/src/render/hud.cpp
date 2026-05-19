@@ -14,6 +14,10 @@
 
 #include <algorithm>
 
+#ifdef OPM_CLIENT_HAS_IMGUI
+#include <imgui.h>
+#endif
+
 namespace opm::client::render {
 
 void drawDebugPlayerBody(const float x0, const float y0, const float x1, const float y1)
@@ -39,6 +43,42 @@ void drawDebugPlayerBody(const float x0, const float y0, const float x1, const f
 void drawPSpeedHud(const float meterValue, const bool pSpeedActive,
                    const int framebufferWidth, const int framebufferHeight)
 {
+#ifdef OPM_CLIENT_HAS_IMGUI
+    // Use ImGui's foreground draw list for screen-space HUD elements.
+    (void)framebufferWidth;  // Not used in ImGui path
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const float clamped = std::clamp(meterValue, 0.0F, 1.0F);
+
+    const float x = 12.0F;
+    const float y = static_cast<float>(framebufferHeight) - 18.0F;
+    const float w = 74.0F;
+    const float h = 8.0F;
+
+    // Background bar (dark with slight transparency).
+    const ImU32 bgColor = ImGui::GetColorU32(ImVec4(0.06F, 0.08F, 0.10F, 0.75F));
+    dl->AddRectFilled(ImVec2(x - 2.0F, y - 2.0F),
+                      ImVec2(x + w + 2.0F, y + h + 2.0F),
+                      bgColor, 2.0F);
+
+    // Fill bar (amber if active, red if inactive).
+    const float fillW = w * clamped;
+    if (fillW > 0.0F) {
+        const ImU32 fillColor = pSpeedActive
+            ? ImGui::GetColorU32(ImVec4(1.0F, 0.86F, 0.16F, 1.0F))   // amber
+            : ImGui::GetColorU32(ImVec4(0.80F, 0.22F, 0.22F, 1.0F)); // red
+        dl->AddRectFilled(ImVec2(x, y),
+                          ImVec2(x + fillW, y + h),
+                          fillColor, 1.0F);
+    }
+
+    // Border (light gray).
+    const ImU32 borderColor = ImGui::GetColorU32(ImVec4(0.95F, 0.95F, 0.95F, 1.0F));
+    dl->AddRect(ImVec2(x, y),
+                ImVec2(x + w, y + h),
+                borderColor, 1.0F, ImDrawFlags_RoundCornersAll, 1.0F);
+
+#else
+    // Fallback to raw GL if ImGui is not available.
     (void)framebufferWidth;
     const float clamped = std::clamp(meterValue, 0.0F, 1.0F);
 
@@ -79,6 +119,7 @@ void drawPSpeedHud(const float meterValue, const bool pSpeedActive,
     glVertex2f(x + w, y + h);
     glVertex2f(x, y + h);
     glEnd();
+#endif
 }
 
 } // namespace opm::client::render

@@ -210,20 +210,47 @@ void destroyTileTextures(std::unordered_map<std::string, GLuint>& textures)
 void drawTextureQuad(const Texture2D& tex,
                      const bool flipX,
                      const float x0, const float y0,
-                     const float x1, const float y1)
+                     const float x1, const float y1,
+                     const bool flipY)
 {
     if (tex.handle == 0) {
         return;
     }
     const float u0 = flipX ? 1.0F : 0.0F;
     const float u1 = flipX ? 0.0F : 1.0F;
+    const float v0 = flipY ? 0.0F : 1.0F;
+    const float v1 = flipY ? 1.0F : 0.0F;
     glBindTexture(GL_TEXTURE_2D, tex.handle);
     glColor3f(1.0F, 1.0F, 1.0F);
     glBegin(GL_QUADS);
-    glTexCoord2f(u0, 1.0F); glVertex2f(x0, y0);
-    glTexCoord2f(u1, 1.0F); glVertex2f(x1, y0);
-    glTexCoord2f(u1, 0.0F); glVertex2f(x1, y1);
-    glTexCoord2f(u0, 0.0F); glVertex2f(x0, y1);
+    glTexCoord2f(u0, v0); glVertex2f(x0, y0);
+    glTexCoord2f(u1, v0); glVertex2f(x1, y0);
+    glTexCoord2f(u1, v1); glVertex2f(x1, y1);
+    glTexCoord2f(u0, v1); glVertex2f(x0, y1);
+    glEnd();
+}
+
+void drawTextureQuadTinted(const Texture2D& tex,
+                           const bool flipX,
+                           const float x0, const float y0,
+                           const float x1, const float y1,
+                           const float r, const float g, const float b, const float a,
+                           const bool flipY)
+{
+    if (tex.handle == 0) {
+        return;
+    }
+    const float u0 = flipX ? 1.0F : 0.0F;
+    const float u1 = flipX ? 0.0F : 1.0F;
+    const float v0 = flipY ? 0.0F : 1.0F;
+    const float v1 = flipY ? 1.0F : 0.0F;
+    glBindTexture(GL_TEXTURE_2D, tex.handle);
+    glColor4f(r, g, b, a);
+    glBegin(GL_QUADS);
+    glTexCoord2f(u0, v0); glVertex2f(x0, y0);
+    glTexCoord2f(u1, v0); glVertex2f(x1, y0);
+    glTexCoord2f(u1, v1); glVertex2f(x1, y1);
+    glTexCoord2f(u0, v1); glVertex2f(x0, y1);
     glEnd();
 }
 

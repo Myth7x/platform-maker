@@ -4,6 +4,7 @@
 #include "render/sprite.hpp"
 #include "render/texture.hpp"
 #include "render/texture_loader.hpp"
+#include "render/ui_widgets.hpp"
 
 #include "opm/engine.hpp"
 #include "opm/level.hpp"
@@ -22,6 +23,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -227,9 +229,77 @@ void LevelCreatorScreen::render(ScreenContext& ctx)
     const auto layerAlpha = [&](EditorLayer which) {
         return session.editor.activeLayer == which ? activeAlpha : inactiveAlpha;
     };
+    // Shadow layer: rendered before all tiles so terrain naturally occludes
+    // shadow fragments that fall inside solid geometry.
+    {
+        constexpr float kShadowAlpha =  0.45F;
+        constexpr float kShadowDX    =  3.0F;
+        constexpr float kShadowDY    = -4.0F;
+        const float editorScale = editorPixelsPerTile / kPixelsPerTile;
+        const float shadowBodyW = opm::engine::kPlayerWidthTiles * editorPixelsPerTile;
+        const float fallbackW   = kPlayerRenderWidthTiles  * editorPixelsPerTile;
+        const float fallbackH   = kPlayerRenderHeightTiles * editorPixelsPerTile;
+        for (const auto& s : session.editor.level.actors) {
+            const float bodyLeft   = s.x * editorPixelsPerTile - cameraX;
+            const float bodyBottom = s.y * editorPixelsPerTile - cameraY;
+            const EnemyRegistry& reg = (s.category == opm::engine::ActorCategory::Powerup)
+                ? powerupRegistry : enemyRegistry;
+            const EnemySprite* es = reg.spriteFor(s.enemyKind);
+            const Texture2D* tex = (es != nullptr && !es->frames.empty())
+                ? &es->frames[0] : nullptr;
+            float drawW = fallbackW;
+            float drawH = fallbackH;
+            if (tex != nullptr) {
+                const float texW = static_cast<float>(tex->width);
+                const float texH = static_cast<float>(tex->height);
+                if (es != nullptr && es->heightTiles > 0.0F && texH > 0.0F) {
+                    drawH = es->heightTiles * editorPixelsPerTile;
+                    drawW = drawH * (texW / texH);
+                } else {
+                    drawW = texW * editorScale;
+                    drawH = texH * editorScale;
+                }
+            }
+            const float ax0 = bodyLeft - (drawW - shadowBodyW) * 0.5F;
+            const float ay0 = bodyBottom;
+            const float ax1 = ax0 + drawW;
+            const float ay1 = ay0 + drawH;
+            if (tex != nullptr) {
+                drawTextureQuadTinted(*tex, false,
+                    ax0 + kShadowDX * zoomScale, ay0 + kShadowDY * zoomScale,
+                    ax1 + kShadowDX * zoomScale, ay1 + kShadowDY * zoomScale,
+                    0.0F, 0.0F, 0.0F, kShadowAlpha);
+            }
+        }
+        // Safe-zone shadow: dark offset dashes drawn before tiles.
+        {
+            const auto z = opm::engine::computeSpawnSafeZone(session.editor.level);
+            const float x0 = z.minX * editorPixelsPerTile - cameraX + kShadowDX * zoomScale;
+            const float y0 = z.minY * editorPixelsPerTile - cameraY + kShadowDY * zoomScale;
+            const float x1 = z.maxX * editorPixelsPerTile - cameraX + kShadowDX * zoomScale;
+            const float y1 = z.maxY * editorPixelsPerTile - cameraY + kShadowDY * zoomScale;
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glColor4f(0.0F, 0.0F, 0.0F, 0.5F);
+            const float kDashPx = 6.0F * zoomScale;
+            const float kGapPx  = 4.0F * zoomScale;
+            const float step = kDashPx + kGapPx;
+            glBegin(GL_LINES);
+            for (float x = x0; x < x1; x += step) {
+                const float xe = std::min(x + kDashPx, x1);
+                glVertex2f(x, y0); glVertex2f(xe, y0);
+                glVertex2f(x, y1); glVertex2f(xe, y1);
+            }
+            for (float y = y0; y < y1; y += step) {
+                const float ye = std::min(y + kDashPx, y1);
+                glVertex2f(x0, y); glVertex2f(x0, ye);
+                glVertex2f(x1, y); glVertex2f(x1, ye);
+            }
+            glEnd();
+        }
+    }
     drawEditorLayer(session.editor.entries.background, layerAlpha(EditorLayer::Background));
-    // Spawn safe zone — dotted white outline, drawn between
-    // background and foliage so foliage and actors render on top.
+    drawEditorLayer(session.editor.entries.foliage,    layerAlpha(EditorLayer::Foliage));
+    // Safe-zone colored dotted outline — visible over tile layers.
     {
         const auto z = opm::engine::computeSpawnSafeZone(session.editor.level);
         const float x0 = z.minX * editorPixelsPerTile - cameraX;
@@ -254,7 +324,6 @@ void LevelCreatorScreen::render(ScreenContext& ctx)
         }
         glEnd();
     }
-    drawEditorLayer(session.editor.entries.foliage,    layerAlpha(EditorLayer::Foliage));
     drawEditorLayer(session.editor.entries.foreground, layerAlpha(EditorLayer::Foreground));
 
     // Spawn marker (green) and Goal marker (gold).
@@ -764,22 +833,23 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
         ImGui::TextColored(layerColor, "[%s]", layerLabel);
         ImGui::Separator();
 
-        const bool eraserSelected = session.editor.selectedTile == 0U
-            && !session.editor.placingSpawn && !session.editor.placingGoal;
-        ImGui::PushStyleColor(ImGuiCol_Button,
-            eraserSelected ? ImVec4(0.4F, 0.7F, 1.0F, 1.0F) : ImVec4(0.25F, 0.25F, 0.25F, 1.0F));
-        if (ImGui::Button("Eraser", ImVec2(-1.0F, 30.0F))) {
-            session.editor.selectedTile = 0U;
-            session.editor.placingSpawn = false;
-            session.editor.placingGoal = false;
+        {
+            // Eraser button: use Ghost variant, full-width, 32px height
+            ImGui::PushID("##eraser");
+            const bool clicked = opm::client::render::OpmButtonGhost(
+                "Eraser", ImVec2(-1.0F, 32.0F));
+            if (clicked) {
+                session.editor.selectedTile = 0U;
+                session.editor.placingSpawn = false;
+                session.editor.placingGoal = false;
+            }
+            ImGui::PopID();
         }
-        ImGui::PopStyleColor();
 
         ImGui::Spacing();
-        constexpr float thumbSize = 40.0F;
-        const float availWidth = ImGui::GetContentRegionAvail().x;
-        const auto cols = std::max(1,
-            static_cast<int>(availWidth / (thumbSize + ImGui::GetStyle().ItemSpacing.x)));
+        constexpr float thumbSize = 64.0F;
+        // 2-column MM2-style grid
+        const int cols = 2;
         int columnCounter = 0;
         std::string currentPaletteSet;
         for (const auto& entry : palette) {
@@ -790,8 +860,7 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
                 currentPaletteSet = entry.subCategory;
                 if (!currentPaletteSet.empty()) {
                     ImGui::Spacing();
-                    ImGui::TextDisabled("%s", currentPaletteSet.c_str());
-                    ImGui::Separator();
+                    opm::client::render::OpmSectionHeader(currentPaletteSet.c_str());
                 }
             }
             if (columnCounter > 0) {
@@ -800,26 +869,16 @@ void LevelCreatorScreen::renderUI(ScreenContext& ctx)
             ImGui::PushID(static_cast<int>(entry.tileIndex));
             const bool selected = session.editor.selectedTile == entry.tileIndex
                 && !session.editor.placingSpawn && !session.editor.placingGoal;
-            const ImVec4 tint(1.0F, 1.0F, 1.0F, 1.0F);
-            const ImVec4 bg = selected ? ImVec4(0.2F, 0.5F, 0.9F, 1.0F)
-                                       : ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
-            if (entry.texture != 0U) {
-                if (ImGui::ImageButton("##t",
-                        (ImTextureID)(intptr_t)entry.texture,
-                        ImVec2(thumbSize, thumbSize),
-                        ImVec2(0, 0), ImVec2(1, 1), bg, tint)) {
-                    session.editor.selectedTile = entry.tileIndex;
-                    session.editor.placingSpawn = false;
-                    session.editor.placingGoal = false;
-                }
-            } else {
-                char label[16];
-                std::snprintf(label, sizeof(label), "%u", entry.tileIndex);
-                if (ImGui::Button(label, ImVec2(thumbSize, thumbSize))) {
-                    session.editor.selectedTile = entry.tileIndex;
-                    session.editor.placingSpawn = false;
-                    session.editor.placingGoal = false;
-                }
+            
+            // Use OpmIconButton for MM2-style appearance.
+            // Note: OpmIconButton expects a valid ImTextureID; cast as before.
+            const ImTextureID texId = entry.texture != 0U
+                ? (ImTextureID)(intptr_t)entry.texture
+                : ImTextureID_Invalid;
+            if (opm::client::render::OpmIconButton(texId, "", ImVec2(thumbSize, thumbSize), selected)) {
+                session.editor.selectedTile = entry.tileIndex;
+                session.editor.placingSpawn = false;
+                session.editor.placingGoal = false;
             }
             ImGui::PopID();
             if (++columnCounter >= cols) {

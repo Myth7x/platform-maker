@@ -485,6 +485,7 @@ void encodeStateUpdatePayload(const StateUpdateData& update, std::vector<std::ui
         out.push_back(player.style);
         out.push_back(player.powerupTransitionFrames);
         out.push_back(player.invincibilityFrames);
+        writeBool(out, player.isDying);
     }
     writeU32(out, static_cast<std::uint32_t>(update.actors.size()));
     for (const auto& a : update.actors) {
@@ -534,6 +535,9 @@ StateUpdateData decodeStateUpdatePayload(const std::vector<std::uint8_t>& payloa
         }
         if (!reader.done()) {
             player.invincibilityFrames = reader.readU8();
+        }
+        if (!reader.done()) {
+            player.isDying = reader.readBool();
         }
         update.players.push_back(player);
     }

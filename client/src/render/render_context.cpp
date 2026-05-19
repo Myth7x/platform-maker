@@ -17,6 +17,7 @@
 #include <backends/imgui_impl_opengl2.h>
 
 #include "render/theme.hpp"
+#include "render/ui_widgets.hpp"
 #endif
 
 #include <iostream>
@@ -56,10 +57,31 @@ RenderContext::RenderContext(int width, int height, const char* title)
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    (void)io;
+    io.IniFilename = "imgui.ini";
+
+    // --- Font loading ---
+    // Try to load Press Start 2P (pixel font, OFL license).
+    // Place the TTF at client/resources/fonts/PressStart2P-Regular.ttf.
+    // Available free from: https://fonts.google.com/specimen/Press+Start+2P
+    // If missing, ImGui silently uses its built-in Proggy Clean font.
+    ImFont* fontBody  = nullptr;
+    ImFont* fontTitle = nullptr;
+    {
+        ImFontConfig cfg;
+        cfg.OversampleH = 1;   // pixel font: no oversampling
+        cfg.OversampleV = 1;
+        cfg.PixelSnapH  = true;
+        const char* fontPath = OPM_CLIENT_RESOURCE_DIR "/fonts/PressStart2P-Regular.ttf";
+        fontBody  = io.Fonts->AddFontFromFileTTF(fontPath,  8.0F, &cfg);
+        fontTitle = io.Fonts->AddFontFromFileTTF(fontPath, 16.0F, &cfg);
+        // Null means TTF wasn't found — ImGui will fall back to default.
+    }
+    opmSetFonts(fontBody, fontTitle);
+
     applyTheme(kDefaultTheme);
     ImGui_ImplGlfw_InitForOpenGL(window_, true);
     ImGui_ImplOpenGL2_Init();
+    // Note: do NOT call io.Fonts->Build() — the backend does this after RendererHasTextures is set.
     imguiInitialized_ = true;
 #endif
 

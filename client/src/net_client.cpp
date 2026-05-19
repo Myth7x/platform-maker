@@ -596,6 +596,7 @@ bool SessionClient::pollStateUpdate(const std::uint32_t timeoutMs, StateUpdate& 
             .style = player.style,
             .powerupTransitionFrames = player.powerupTransitionFrames,
             .invincibilityFrames = player.invincibilityFrames,
+            .isDying = player.isDying,
         });
     }
     update.actors.clear();

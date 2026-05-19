@@ -234,7 +234,14 @@ void PlayingScreen::render(ScreenContext& ctx)
     constexpr float kPlayerRenderHeightTiles = 40.0F / kPixelsPerTile;
 
     opm::engine::PlayerState cameraPlayer {};
-    if (!net.actors.actors().empty()) {
+    // During GameOver with online play, focus camera on the winner.
+    if (session.isOnline && session.gamePhase == opm::protocol::GamePhase::GameOver &&
+        session.winnerSlot != 0xFFFFU && ctx.net != nullptr) {
+        if (const auto* winner = ctx.net->actors.findByServerIndex(session.winnerSlot)) {
+            cameraPlayer = winner->state;
+        }
+    } else if (!net.actors.actors().empty()) {
+        // Normal gameplay: follow local player
         cameraPlayer = net.actors.actors().front().state;
     }
 
@@ -299,8 +306,138 @@ void PlayingScreen::render(ScreenContext& ctx)
             }
         }
     };
-    // Draw order: background → safe-zone → foliage → players → foreground.
+    // Draw order: shadow-layer → background → foliage → safe-zone → players → foreground.
+    const float bodyWidthPixels = opm::engine::kPlayerWidthTiles * kPixelsPerTile;
+    const float fallbackWidthPixels  = kPlayerRenderWidthTiles  * kPixelsPerTile;
+    const float fallbackHeightPixels = kPlayerRenderHeightTiles * kPixelsPerTile;
+
+    // Anchors a quad of pixel size (texW, texH) at the bottom-center
+    // of the body (so feet sit on `bodyBottom` and the sprite stays
+    // centered horizontally on `bodyLeft + bodyWidth/2`).
+    const auto anchorBottomCenter = [](float bodyLeftWorld, float bodyBottomWorld,
+                                       float bodyW, float texW, float texH,
+                                       float& x0, float& y0, float& x1, float& y1) {
+        x0 = bodyLeftWorld - (texW - bodyW) * 0.5F;
+        y0 = bodyBottomWorld;
+        x1 = x0 + texW;
+        y1 = y0 + texH;
+    };
+
+    // Shadow layer: rendered before all tiles so terrain naturally occludes
+    // shadow fragments that fall inside solid geometry.
+    {
+        constexpr float kShadowAlpha =  0.45F;
+        constexpr float kShadowDX    =  3.0F;   // pixels right
+        constexpr float kShadowDY    = -4.0F;   // pixels down (Y-up space)
+        // Player drop-shadows: same frame selection as the render pass,
+        // drawn as a black silhouette at a small offset.
+        for (const auto& actor : net.actors.actors()) {
+            const auto& player = actor.state;
+            if (player.deathFrames > 0U) {
+                continue;
+            }
+            opm::engine::PlayerStyle styleToDraw = player.style;
+            if (player.powerupTransitionFrames > 0U) {
+                constexpr std::uint8_t kFlickerPeriodFrames = 4U;
+                const bool showOther =
+                    ((player.powerupTransitionFrames / kFlickerPeriodFrames) & 1U) != 0U;
+                if (showOther) {
+                    styleToDraw = (player.style == opm::engine::PlayerStyle::Big)
+                        ? opm::engine::PlayerStyle::Small
+                        : opm::engine::PlayerStyle::Big;
+                }
+            }
+            const bool blinkInvisible =
+                player.powerupTransitionFrames == 0U
+                && player.invincibilityFrames > 0U
+                && ((player.invincibilityFrames / 3U) & 1U) != 0U;
+            if (blinkInvisible) {
+                continue;
+            }
+            const float bodyLeftWorld   = (player.position.x * kPixelsPerTile) - cameraX;
+            const float bodyBottomWorld = (player.position.y * kPixelsPerTile) - cameraY;
+            const PlayerSprite& chosen = playerSpriteSet.forStyle(styleToDraw);
+            const PlayerFrameSelection sel = selectPlayerFrame(chosen, player, animationTime);
+            if (sel.tex != nullptr) {
+                const float texW = static_cast<float>(sel.tex->width);
+                const float texH = static_cast<float>(sel.tex->height);
+                const float clipH = (sel.clip != nullptr) ? sel.clip->heightTiles : 0.0F;
+                float drawH = texH;
+                float drawW = texW;
+                if (clipH > 0.0F && texH > 0.0F) {
+                    drawH = clipH * kPixelsPerTile;
+                    drawW = drawH * (texW / texH);
+                }
+                float px0 = 0, py0 = 0, px1 = 0, py1 = 0;
+                anchorBottomCenter(bodyLeftWorld, bodyBottomWorld, bodyWidthPixels,
+                                   drawW, drawH, px0, py0, px1, py1);
+                drawTextureQuadTinted(*sel.tex, false,
+                    px0 + kShadowDX, py0 + kShadowDY,
+                    px1 + kShadowDX, py1 + kShadowDY,
+                    0.0F, 0.0F, 0.0F, kShadowAlpha);
+            }
+        }
+        // World actor drop-shadows.
+        for (const auto& a : net.actors.worldActors()) {
+            if (!a.alive) {
+                continue;
+            }
+            const float bodyLeftWorld   = (a.position.x * kPixelsPerTile) - cameraX;
+            const float bodyBottomWorld = (a.position.y * kPixelsPerTile) - cameraY;
+            const EnemyRegistry& reg = (a.category == opm::engine::ActorCategory::Powerup)
+                ? powerupRegistry : enemyRegistry;
+            const EnemySprite* es = reg.spriteFor(a.enemyKind);
+            const Texture2D* tex = (es != nullptr)
+                ? selectEnemyFrame(*es, animationTime, a.velocity.x)
+                : nullptr;
+            if (tex != nullptr) {
+                const float texW = static_cast<float>(tex->width);
+                const float texH = static_cast<float>(tex->height);
+                float drawH = texH;
+                float drawW = texW;
+                if (es != nullptr && es->heightTiles > 0.0F && texH > 0.0F) {
+                    drawH = es->heightTiles * kPixelsPerTile;
+                    drawW = drawH * (texW / texH);
+                }
+                float ax0 = 0, ay0 = 0, ax1 = 0, ay1 = 0;
+                anchorBottomCenter(bodyLeftWorld, bodyBottomWorld, bodyWidthPixels,
+                                   drawW, drawH, ax0, ay0, ax1, ay1);
+                drawTextureQuadTinted(*tex, !a.facingRight,
+                    ax0 + kShadowDX, ay0 + kShadowDY,
+                    ax1 + kShadowDX, ay1 + kShadowDY,
+                    0.0F, 0.0F, 0.0F, kShadowAlpha);
+            }
+        }
+        // Safe-zone shadow: dark offset dashes drawn before tiles so terrain
+        // naturally occludes the shadow.
+        {
+            const auto z = opm::engine::computeSpawnSafeZone(session.activeLevel);
+            const float x0 = z.minX * kPixelsPerTile - cameraX + kShadowDX;
+            const float y0 = z.minY * kPixelsPerTile - cameraY + kShadowDY;
+            const float x1 = z.maxX * kPixelsPerTile - cameraX + kShadowDX;
+            const float y1 = z.maxY * kPixelsPerTile - cameraY + kShadowDY;
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glColor4f(0.0F, 0.0F, 0.0F, 0.5F);
+            constexpr float kDashPx = 6.0F;
+            constexpr float kGapPx = 4.0F;
+            const float step = kDashPx + kGapPx;
+            glBegin(GL_LINES);
+            for (float x = x0; x < x1; x += step) {
+                const float xe = std::min(x + kDashPx, x1);
+                glVertex2f(x, y0); glVertex2f(xe, y0);
+                glVertex2f(x, y1); glVertex2f(xe, y1);
+            }
+            for (float y = y0; y < y1; y += step) {
+                const float ye = std::min(y + kDashPx, y1);
+                glVertex2f(x0, y); glVertex2f(x0, ye);
+                glVertex2f(x1, y); glVertex2f(x1, ye);
+            }
+            glEnd();
+        }
+    }
     drawTileLayer(session.entries.background, 1.0F);
+    drawTileLayer(session.entries.foliage, 1.0F);
+    // Safe-zone colored dotted outline — visible over tile layers.
     {
         const auto z = opm::engine::computeSpawnSafeZone(session.activeLevel);
         const float x0 = z.minX * kPixelsPerTile - cameraX;
@@ -308,7 +445,14 @@ void PlayingScreen::render(ScreenContext& ctx)
         const float x1 = z.maxX * kPixelsPerTile - cameraX;
         const float y1 = z.maxY * kPixelsPerTile - cameraY;
         glBindTexture(GL_TEXTURE_2D, 0);
-        glColor4f(1.0F, 1.0F, 1.0F, 0.85F);
+        // Color safe zone based on game phase: red during countdown, green during gameplay
+        if (session.gamePhase == opm::protocol::GamePhase::RoundStarting) {
+            glColor4f(1.0F, 0.2F, 0.2F, 0.85F);  // Red during countdown
+        } else if (session.gamePhase == opm::protocol::GamePhase::Playing) {
+            glColor4f(0.2F, 1.0F, 0.2F, 0.85F);  // Green during gameplay
+        } else {
+            glColor4f(1.0F, 1.0F, 1.0F, 0.85F);  // White for other phases
+        }
         constexpr float kDashPx = 6.0F;
         constexpr float kGapPx = 4.0F;
         const float step = kDashPx + kGapPx;
@@ -325,23 +469,6 @@ void PlayingScreen::render(ScreenContext& ctx)
         }
         glEnd();
     }
-    drawTileLayer(session.entries.foliage, 1.0F);
-
-    const float bodyWidthPixels = opm::engine::kPlayerWidthTiles * kPixelsPerTile;
-    const float fallbackWidthPixels  = kPlayerRenderWidthTiles  * kPixelsPerTile;
-    const float fallbackHeightPixels = kPlayerRenderHeightTiles * kPixelsPerTile;
-
-    // Anchors a quad of pixel size (texW, texH) at the bottom-center
-    // of the body (so feet sit on `bodyBottom` and the sprite stays
-    // centered horizontally on `bodyLeft + bodyWidth/2`).
-    const auto anchorBottomCenter = [](float bodyLeftWorld, float bodyBottomWorld,
-                                       float bodyW, float texW, float texH,
-                                       float& x0, float& y0, float& x1, float& y1) {
-        x0 = bodyLeftWorld - (texW - bodyW) * 0.5F;
-        y0 = bodyBottomWorld;
-        x1 = x0 + texW;
-        y1 = y0 + texH;
-    };
 
     for (const auto& actor : net.actors.actors()) {
         const auto& player = actor.state;
@@ -369,6 +496,31 @@ void PlayingScreen::render(ScreenContext& ctx)
             && player.invincibilityFrames > 0U
             && ((player.invincibilityFrames / 3U) & 1U) != 0U;
         if (blinkInvisible) {
+            continue;
+        }
+        // Render death pose (upside-down) if dying
+        if (player.deathFrames > 0U) {
+            // Use idle frame to show player is "out" - just draw them upside-down
+            const PlayerSprite& deadChosen = playerSpriteSet.forStyle(player.style);
+            const auto& idleFrames = deadChosen.idle.side(!player.facingRight);
+            if (!idleFrames.empty()) {
+                const auto& deadTex = idleFrames[0]; // Frame 0 of idle animation
+                const float texW = static_cast<float>(deadTex.width);
+                const float texH = static_cast<float>(deadTex.height);
+                float drawH = texH;
+                float drawW = texW;
+                if (deadChosen.idle.heightTiles > 0.0F) {
+                    drawH = deadChosen.idle.heightTiles * kPixelsPerTile;
+                    drawW = drawH * (texW / texH);
+                }
+                float playerX0 = 0, playerY0 = 0, playerX1 = 0, playerY1 = 0;
+                anchorBottomCenter(
+                    bodyLeftWorld, bodyBottomWorld, bodyWidthPixels,
+                    drawW, drawH,
+                    playerX0, playerY0, playerX1, playerY1);
+                // Draw upside-down (flipY = true)
+                drawTextureQuad(deadTex, !player.facingRight, playerX0, playerY0, playerX1, playerY1, /*flipY=*/true);
+            }
             continue;
         }
         const PlayerSprite& chosen = playerSpriteSet.forStyle(styleToDraw);
@@ -528,20 +680,26 @@ void PlayingScreen::renderUI(ScreenContext& ctx)
     // ===== GameOver winner banner =====
     if (session.gamePhase == opm::protocol::GamePhase::GameOver) {
         const int s = std::max(0, static_cast<int>(std::ceil(secondsRemaining)));
-        const bool weWon =
-            ctx.net != nullptr && session.winnerSlot != 0xFFFFU &&
-            ctx.net->actors.localActor() != nullptr &&
-            ctx.net->actors.localActor()->serverIndex == session.winnerSlot;
-        if (weWon) {
-            std::snprintf(buf, sizeof(buf),
-                "YOU WIN!\nReturning to lobby in %ds", s);
-        } else if (session.winnerSlot != 0xFFFFU) {
-            const char* winnerName = "Player";
+        if (session.winnerSlot != 0xFFFFU) {
+            // Slot-based fallback matches the server's default "Player N" roster names.
+            static char slotFallback[32];
+            std::snprintf(slotFallback, sizeof(slotFallback),
+                "Player %d", static_cast<int>(session.winnerSlot + 1));
+            const char* winnerName = slotFallback;
+
+            // Mirror the lobby: match by info.playerIndex (roster-populated field).
+            // Prefer session.displayName for the local player (set at login).
             if (ctx.net != nullptr) {
-                if (const auto* winner = ctx.net->actors.findByServerIndex(session.winnerSlot)) {
-                    if (!winner->info.displayName.empty()) {
-                        winnerName = winner->info.displayName.c_str();
+                for (const auto& actor : ctx.net->actors.actors()) {
+                    if (actor.info.playerIndex != session.winnerSlot) {
+                        continue;
                     }
+                    if (actor.isLocal && !session.displayName.empty()) {
+                        winnerName = session.displayName.c_str();
+                    } else if (!actor.info.displayName.empty()) {
+                        winnerName = actor.info.displayName.c_str();
+                    }
+                    break;
                 }
             }
             std::snprintf(buf, sizeof(buf),

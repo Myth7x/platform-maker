@@ -6,6 +6,7 @@
 
 #ifdef OPM_CLIENT_HAS_IMGUI
 #include <imgui.h>
+#include "render/ui_widgets.hpp"
 #endif
 
 namespace opm::client {
@@ -113,7 +114,8 @@ void MainMenuScreen::renderUI(ScreenContext& ctx)
 
     // Left pane: Lobby Browser
     ImGui::SetCursorPos(ImVec2(contentPadding, navbarHeight + contentPadding));
-    ImGui::BeginChild("LobbyPane", ImVec2(leftPaneWidth, contentHeight - contentPadding * 2), true);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0F);
+    ImGui::BeginChild("LobbyPane", ImVec2(leftPaneWidth, contentHeight - contentPadding * 2), false);
     
     // Lobby state
     static std::vector<opm::client::game::LobbyListing> displayLobbies;
@@ -151,16 +153,20 @@ void MainMenuScreen::renderUI(ScreenContext& ctx)
         ImGui::TextDisabled("(no lobbies available)");
     } else {
         for (const auto& lobby : displayLobbies) {
-            const std::string label = lobby.name + " (" + std::to_string(lobby.players) + "/" + 
-                                      std::to_string(lobby.capacity) + ")";
-            if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick)) {
-                if (ImGui::IsMouseDoubleClicked(0)) {
-                    std::string host;
-                    std::uint16_t port = 0;
-                    if (resolveHostPort(host, port)) {
-                        const auto err = callbacks_.onJoinLobby(host, port, lobby.name);
-                        session.menuStatus = err;
-                    }
+            char detail[32];
+            std::snprintf(detail, sizeof(detail), "%u/%u", lobby.players, lobby.capacity);
+            ImGui::PushID(lobby.name.c_str());
+            opm::client::render::OpmListItem(lobby.name.c_str(), detail, false);
+            // Check double-click while item context is still active (before PopID)
+            const bool doubleClicked = ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0);
+            ImGui::PopID();
+            
+            if (doubleClicked) {
+                std::string host;
+                std::uint16_t port = 0;
+                if (resolveHostPort(host, port)) {
+                    const auto err = callbacks_.onJoinLobby(host, port, lobby.name);
+                    session.menuStatus = err;
                 }
             }
         }
@@ -168,17 +174,20 @@ void MainMenuScreen::renderUI(ScreenContext& ctx)
     
     if (!session.menuStatus.empty()) {
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(1.0F, 0.55F, 0.45F, 1.0F), "%s", session.menuStatus.c_str());
+        opm::client::render::OpmBadge(session.menuStatus.c_str(),
+            opm::client::render::OpmColor::DangerV4);
     }
     
     ImGui::EndChild();
+    ImGui::PopStyleVar();
 
     // Right pane: Actions
     ImGui::SetCursorPos(ImVec2(vp->Size.x - rightPaneWidth - contentPadding, navbarHeight + contentPadding));
-    ImGui::BeginChild("ActionsPane", ImVec2(rightPaneWidth, contentHeight - contentPadding * 2), true);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0F);
+    ImGui::BeginChild("ActionsPane", ImVec2(rightPaneWidth, contentHeight - contentPadding * 2), false);
 
     // Create Lobby button
-    if (ImGui::Button("Create Lobby", ImVec2(-1.0F, 44.0F))) {
+    if (opm::client::render::OpmButtonSuccess("Create Lobby", ImVec2(-1.0F, 44.0F))) {
         createLobbyDialogOpen_ = true;
         createLobbyName_.clear();
         createLobbyStatus_.clear();
@@ -187,7 +196,7 @@ void MainMenuScreen::renderUI(ScreenContext& ctx)
     ImGui::Spacing();
 
     // Level Creator button
-    if (ImGui::Button("Level Creator", ImVec2(-1.0F, 44.0F))) {
+    if (opm::client::render::OpmButton("Level Creator", ImVec2(-1.0F, 44.0F))) {
         std::string host;
         std::uint16_t port = 0;
         if (resolveHostPort(host, port)) {
@@ -201,11 +210,12 @@ void MainMenuScreen::renderUI(ScreenContext& ctx)
     ImGui::Spacing();
 
     // Logout button
-    if (ImGui::Button("Logout", ImVec2(-1.0F, 32.0F))) {
+    if (opm::client::render::OpmButtonDanger("Logout", ImVec2(-1.0F, 32.0F))) {
         callbacks_.onLogout();
     }
 
     ImGui::EndChild();
+    ImGui::PopStyleVar();
 
     if (profileEditorOpen_) {
         ImGui::OpenPopup("Edit Profile");
@@ -239,7 +249,7 @@ void MainMenuScreen::renderUI(ScreenContext& ctx)
         }
 
         ImGui::Spacing();
-        if (ImGui::Button("Save", ImVec2(120.0F, 0.0F))) {
+        if (opm::client::render::OpmButtonSuccess("Save", ImVec2(120.0F, 0.0F))) {
             std::string host;
             std::uint16_t port = 0;
             if (!resolveHostPort(host, port)) {
@@ -259,7 +269,7 @@ void MainMenuScreen::renderUI(ScreenContext& ctx)
             }
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(120.0F, 0.0F))) {
+        if (opm::client::render::OpmButtonGhost("Cancel", ImVec2(120.0F, 0.0F))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -280,11 +290,12 @@ void MainMenuScreen::renderUI(ScreenContext& ctx)
 
         ImGui::Spacing();
         if (!createLobbyStatus_.empty()) {
-            ImGui::TextColored(ImVec4(1.0F, 0.4F, 0.4F, 1.0F), "%s", createLobbyStatus_.c_str());
+            opm::client::render::OpmBadge(createLobbyStatus_.c_str(),
+                opm::client::render::OpmColor::DangerV4);
             ImGui::Spacing();
         }
 
-        if (ImGui::Button("Create", ImVec2(120.0F, 0.0F))) {
+        if (opm::client::render::OpmButton("Create", ImVec2(120.0F, 0.0F))) {
             if (createLobbyName_.empty()) {
                 createLobbyStatus_ = "Lobby name cannot be empty";
             } else if (netSession != nullptr && netSession->isConnected()) {
@@ -301,7 +312,7 @@ void MainMenuScreen::renderUI(ScreenContext& ctx)
             }
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(120.0F, 0.0F))) {
+        if (opm::client::render::OpmButtonGhost("Cancel", ImVec2(120.0F, 0.0F))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

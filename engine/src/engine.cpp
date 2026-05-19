@@ -33,6 +33,11 @@ constexpr float kJumpLaunchVelocity = 20.75F;
 constexpr float kGravityHeld = -31.0F;
 constexpr float kGravityReleased = -72.0F;
 constexpr float kMaxFallSpeed = -17.5F;
+// Death animation: Mario-style bounce when Small player dies to enemy contact.
+// The player launches upward with this velocity, falls under gravity, and after
+// kDeathAnimFrames completes, respawns at the spawn point.
+constexpr float kDeathBounceVelocity = 15.0F;
+constexpr std::uint8_t kDeathAnimFrames = 150U; // 2.5 s @ 60 Hz
 // Entry threshold: skidding only begins after the player is moving fast
 // enough in the *opposite* direction of their input. Below this, a
 // direction-tap is treated as a normal accel curve (no turnaround sprite).
@@ -838,9 +843,9 @@ void Simulation::stepActors()
 
             // ----- Enemy branch -----
             // While the player has any active invulnerability — either
-            // mid power-up transition or post-damage i-frames — enemy
-            // contact does nothing (no stomp, no damage).
-            if (p.powerupTransitionFrames > 0U || p.invincibilityFrames > 0U) {
+            // mid power-up transition, post-damage i-frames, or death animation —
+            // enemy contact does nothing (no stomp, no damage).
+            if (p.powerupTransitionFrames > 0U || p.invincibilityFrames > 0U || p.deathFrames > 0U) {
                 continue;
             }
 
@@ -883,11 +888,11 @@ void Simulation::stepActors()
                 continue;
             }
 
-            const bool wasActive = p.active;
-            p = PlayerState {};
-            p.active = wasActive;
-            p.position.x = level_.spawnX;
-            p.position.y = level_.spawnY;
+            // Small player dies: launch upward with death animation bounce.
+            p.velocity.x = 0.0F;
+            p.velocity.y = kDeathBounceVelocity;
+            p.deathFrames = kDeathAnimFrames;
+            p.onGround = false;
         }
     }
 }
@@ -895,6 +900,26 @@ void Simulation::stepActors()
 void Simulation::integratePlayer(PlayerState& player, const InputFrame& input,
     const std::vector<PlayerState>& others, const std::size_t selfIndex)
 {
+    // Death animation: Mario-style bounce when Small player dies. Player
+    // is launched upward, falls under gravity, and gets no input/collision.
+    // When deathFrames reaches 0, respawn at the level spawn point.
+    if (player.deathFrames > 0U) {
+        player.velocity.y += kGravityReleased * kFixedDeltaSeconds;
+        player.position.x += player.velocity.x * kFixedDeltaSeconds;
+        player.position.y += player.velocity.y * kFixedDeltaSeconds;
+        player.deathFrames = static_cast<std::uint8_t>(player.deathFrames - 1U);
+        if (player.deathFrames == 0U) {
+            // Respawn at spawn point
+            player = PlayerState {};
+            player.active = true;
+            player.position.x = level_.spawnX;
+            player.position.y = level_.spawnY;
+        }
+        (void)input;
+        (void)others;
+        (void)selfIndex;
+        return;
+    }
     // Power-up transition: freeze the player in place, ignore input, zero
     // velocity, and bail out before any movement / collision logic. The
     // damage check in stepActors also skips enemy contact while this
@@ -1231,6 +1256,14 @@ void Simulation::integratePlayer(PlayerState& player, const InputFrame& input,
 
     player.position.x = nextX;
     player.position.y = nextY;
+
+    // Out-of-bounds check: if player falls below the level, trigger death animation
+    if (player.position.y + kPlayerHeightTiles < 0.0F) {
+        player.velocity.x = 0.0F;
+        player.velocity.y = kDeathBounceVelocity;
+        player.deathFrames = kDeathAnimFrames;
+        player.onGround = false;
+    }
 }
 
 std::uint64_t Simulation::stateHash() const
