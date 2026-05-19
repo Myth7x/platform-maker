@@ -3,8 +3,8 @@
 #include "net/sender.hpp"
 #include "runtime/scoped_timer_resolution.hpp"
 #include "runtime/scoped_wsa.hpp"
-#include "runtime/tick_pacer.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <exception>
@@ -76,6 +76,7 @@ int Server::run()
         tickBroadcastState();
         tickProcessSendFailures();
         tickReportStats();
+        idleIO(pacer.deadline());
         pacer.waitForNext();
     }
 
@@ -126,6 +127,44 @@ void Server::shutdown()
     std::cout << "[server] shutdown\n";
 }
 
+void Server::idleIO(const std::chrono::steady_clock::time_point tickDeadline)
+{
+    while (true) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= tickDeadline) {
+            break;
+        }
+        const auto remainUs =
+            std::chrono::duration_cast<std::chrono::microseconds>(tickDeadline - now).count();
+        // Cap to at least 0 ms to avoid blocking past the deadline.
+        const int timeoutMs = static_cast<int>(std::max<std::int64_t>(remainUs / 1000, 0));
+
+        idlePollFds_.clear();
+        idlePollFds_.push_back({listenSocket_.handle(), POLLIN, 0});
+        for (const auto& [fd, _conn] : connections_.map()) {
+            idlePollFds_.push_back({fd, POLLIN, 0});
+        }
+
+        const int n = sockPoll(idlePollFds_.data(),
+#ifdef _WIN32
+            static_cast<ULONG>(idlePollFds_.size()),
+#else
+            static_cast<nfds_t>(idlePollFds_.size()),
+#endif
+            timeoutMs);
+        if (n <= 0) {
+            // Timeout or error — deadline reached or no data.
+            break;
+        }
+
+        // Data is available on at least one fd — do a quick recv+dispatch
+        // pass so Pings (and any other messages) are handled immediately.
+        tickAccept();
+        tickRecvAndDispatch();
+        tickProcessDrops();
+    }
+}
+
 void Server::tickAccept()
 {
     while (true) {
@@ -161,16 +200,20 @@ void Server::tickRecvAndDispatch()
 void Server::dispatchPackets(ClientConnection& conn)
 {
     auto& buffer = conn.recvBuffer();
-    scanPackets(buffer, packetViews_);
+    const std::size_t offset = conn.recvOffset();
+    // Scan only the unconsumed tail of the buffer.
+    std::span<const std::uint8_t> unread(buffer.data() + offset, buffer.size() - offset);
+    scanPackets(unread, packetViews_);
     std::size_t consumed = 0;
     bool shouldDrop = false;
 
     for (const auto& view : packetViews_) {
         consumed = view.start + view.length;
         try {
-            const auto type = static_cast<opm::protocol::MessageType>(buffer[view.start + 4U]);
+            const auto type = static_cast<opm::protocol::MessageType>(
+                buffer[offset + view.start + 4U]);
             std::span<const std::uint8_t> payload(
-                buffer.data() + view.start + kProtocolHeaderSize,
+                buffer.data() + offset + view.start + kProtocolHeaderSize,
                 view.length - kProtocolHeaderSize);
             if (!handleMessage(conn, type, payload)) {
                 shouldDrop = true;
@@ -183,7 +226,7 @@ void Server::dispatchPackets(ClientConnection& conn)
     }
 
     if (consumed > 0) {
-        buffer.erase(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(consumed));
+        conn.consumeRecv(consumed);
     }
     if (shouldDrop) {
         toDrop_.push_back(conn.fd());
@@ -534,7 +577,12 @@ void Server::tickStepSimulation()
     }
     simulation_.step(pendingInputs_);
     for (auto& input : pendingInputs_) {
-        input = {};
+        // Only clear the one-shot "just pressed" flag. Held-state flags
+        // (runHeld, moveLeft, moveRight, jumpHeld, crouchHeld) are
+        // intentionally retained so a single delayed or missing packet does
+        // not interrupt continuous hold states — P-speed requires runHeld to
+        // be true on every tick without interruption.
+        input.jumpPressed = false;
     }
     // During PreGame, players are confined to the spawn safe zone — if
     // physics moved someone outside (or they spawned just outside), pull
@@ -550,6 +598,11 @@ void Server::confinePlayersToSafeZone()
 {
     const auto zone = opm::engine::computeSpawnSafeZone(simulation_.level());
     auto& players = simulation_.mutableState().players;
+    // Pre-compute float bounds once — these are constant for all players.
+    const float minX = static_cast<float>(zone.minX);
+    const float maxX = static_cast<float>(zone.maxX) - opm::engine::kPlayerWidthTiles;
+    const float minY = static_cast<float>(zone.minY);
+    const float maxY = static_cast<float>(zone.maxY) - opm::engine::kPlayerHeightTiles;
     for (auto& p : players) {
         if (!p.active) {
             continue;
@@ -558,10 +611,6 @@ void Server::confinePlayersToSafeZone()
         // edge <= zone.maxX (player width = kPlayerWidthTiles); same for
         // Y. If the clamp had to move us, also kill velocity in that axis
         // so we don't keep slamming into the invisible wall every tick.
-        const float minX = static_cast<float>(zone.minX);
-        const float maxX = static_cast<float>(zone.maxX) - opm::engine::kPlayerWidthTiles;
-        const float minY = static_cast<float>(zone.minY);
-        const float maxY = static_cast<float>(zone.maxY) - opm::engine::kPlayerHeightTiles;
         if (p.position.x < minX) { p.position.x = minX; if (p.velocity.x < 0) p.velocity.x = 0; }
         if (p.position.x > maxX) { p.position.x = maxX; if (p.velocity.x > 0) p.velocity.x = 0; }
         if (p.position.y < minY) { p.position.y = minY; if (p.velocity.y < 0) p.velocity.y = 0; }
@@ -784,8 +833,11 @@ void Server::tickGamePhase()
 
 void Server::tickBroadcastState()
 {
-    // Encode StateUpdate to wire bytes ONCE per tick, then broadcast raw.
-    opm::protocol::StateUpdateData data;
+    // Reuse persistent scratch vectors to avoid per-tick heap allocation.
+    auto& data = scratchStateUpdate_;
+    data.players.clear();
+    data.actors.clear();
+
     data.serverTick = simulation_.state().tick;
     // Only broadcast active slots — the simulation has up to 500 slots and
     // sending every empty one each tick (~14 KB at 60 Hz) easily fills the
@@ -835,8 +887,9 @@ void Server::tickBroadcastState()
     data.winnerSlot = winnerSlot_;
     data.selectedMap = selectedMap_;
     data.selectedTiebreak = selectedTiebreak_;
-    const auto payload = opm::protocol::encodeStateUpdatePayload(data);
-    broadcastWire_.build(opm::protocol::MessageType::StateUpdate, payload);
+    // Encode into the persistent scratch buffer to avoid a per-tick heap allocation.
+    opm::protocol::encodeStateUpdatePayload(data, scratchPayload_);
+    broadcastWire_.build(opm::protocol::MessageType::StateUpdate, scratchPayload_);
 
     failedSends_.clear();
     for (auto& [fd, conn] : connections_.map()) {

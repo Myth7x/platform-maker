@@ -174,6 +174,14 @@ private:
 
     GameState state_ {};
     LevelData level_ {};
+    // Reused scratch for the per-tick player position snapshot taken at the
+    // start of step() so that integratePlayer reads a stable state regardless
+    // of integration order. Promoted from a local variable to avoid the
+    // per-tick heap allocation (one vector<PlayerState> copy per frame).
+    std::vector<PlayerState> playerSnapshot_ {};
+    // Compact list of active player pointers rebuilt at the start of
+    // stepActors() so actor AI and damage loops skip inactive slots entirely.
+    std::vector<PlayerState*> activePlayerCache_ {};
 };
 
 [[nodiscard]] std::vector<std::uint8_t> serializeInput(const InputFrame& input);

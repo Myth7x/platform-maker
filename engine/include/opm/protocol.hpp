@@ -159,6 +159,9 @@ struct MapVote {
 [[nodiscard]] opm::engine::InputFrame decodeMovementInputPayload(const std::vector<std::uint8_t>& payload);
 
 [[nodiscard]] std::vector<std::uint8_t> encodeStateUpdatePayload(const StateUpdateData& update);
+// Buffer-reuse overload: clears `out` and fills it in-place, avoiding a
+// per-call heap allocation. Use this in the 60 Hz broadcast hot path.
+void encodeStateUpdatePayload(const StateUpdateData& update, std::vector<std::uint8_t>& out);
 [[nodiscard]] StateUpdateData decodeStateUpdatePayload(const std::vector<std::uint8_t>& payload);
 
 [[nodiscard]] std::vector<std::uint8_t> encodeRosterUpdatePayload(const std::vector<PlayerInfo>& roster);

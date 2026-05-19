@@ -106,7 +106,7 @@ private:
         return skipValue(error);
     }
 
-    [[nodiscard]] bool readTileOverrides(std::map<std::uint16_t, TileCollisionMask>& out,
+    [[nodiscard]] bool readTileOverrides(std::unordered_map<std::uint16_t, TileCollisionMask>& out,
                                          std::string& error)
     {
         // Object keyed by stringified tile id, value is an object of

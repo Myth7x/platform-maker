@@ -18,6 +18,10 @@ public:
 
     void waitForNext();
 
+    // The time_point at which the next tick is due. Useful for computing the
+    // remaining idle window without another clock read.
+    [[nodiscard]] std::chrono::steady_clock::time_point deadline() const noexcept { return next_; }
+
 private:
     std::chrono::microseconds interval_;
     std::chrono::steady_clock::time_point next_;

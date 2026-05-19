@@ -76,6 +76,7 @@ int main()
 
     opm::protocol::StateUpdateData update;
     update.serverTick = 42U;
+    update.players.push_back({});
     update.players[0].positionX = 10.5F;
     update.players[0].pSpeedActive = true;
     const auto updatePayload = opm::protocol::encodeStateUpdatePayload(update);

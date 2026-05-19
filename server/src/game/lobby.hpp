@@ -18,6 +18,10 @@ public:
     std::uint32_t capacity {2};
     std::vector<socket_t> slots {};
 
+    Lobby() = default;
+    Lobby(std::string name_, std::uint32_t capacity_)
+        : name(std::move(name_)), capacity(capacity_) {}
+
     // Tries to assign `fd` to the first free slot. Returns the slot index, or
     // nullopt if the lobby is full.
     [[nodiscard]] std::optional<std::uint16_t> tryAssignSlot(socket_t fd) noexcept;
@@ -27,8 +31,13 @@ public:
 
     [[nodiscard]] std::uint32_t playerCount() const noexcept;
 
-    // Builds a roster snapshot for inclusion in protocol responses.
-    [[nodiscard]] std::vector<opm::protocol::PlayerInfo> roster() const;
+    // Returns a cached roster snapshot. The cache is rebuilt only when slot
+    // assignments change, so repeated calls within the same tick are free.
+    [[nodiscard]] const std::vector<opm::protocol::PlayerInfo>& roster() const;
+
+private:
+    mutable std::vector<opm::protocol::PlayerInfo> cachedRoster_ {};
+    mutable bool rosterDirty_ {true};
 };
 
 } // namespace opm::server

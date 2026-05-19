@@ -18,6 +18,10 @@ public:
 
     [[nodiscard]] socket_t fd() const noexcept { return fd_; }
     [[nodiscard]] std::vector<std::uint8_t>& recvBuffer() noexcept { return recvBuffer_; }
+    [[nodiscard]] std::size_t recvOffset() const noexcept { return recvOffset_; }
+    // Advance the read cursor after packets have been consumed. Compacts the
+    // buffer (one memmove) when more than half the capacity has been consumed.
+    void consumeRecv(std::size_t bytes) noexcept;
     [[nodiscard]] PeerSession& session() noexcept { return session_; }
     [[nodiscard]] const PeerSession& session() const noexcept { return session_; }
 
@@ -29,6 +33,7 @@ public:
 private:
     socket_t fd_;
     std::vector<std::uint8_t> recvBuffer_;
+    std::size_t recvOffset_ {0};
     PeerSession session_ {};
 };
 

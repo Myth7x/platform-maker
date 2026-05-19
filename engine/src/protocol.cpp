@@ -461,6 +461,13 @@ opm::engine::InputFrame decodeMovementInputPayload(const std::vector<std::uint8_
 std::vector<std::uint8_t> encodeStateUpdatePayload(const StateUpdateData& update)
 {
     std::vector<std::uint8_t> out;
+    encodeStateUpdatePayload(update, out);
+    return out;
+}
+
+void encodeStateUpdatePayload(const StateUpdateData& update, std::vector<std::uint8_t>& out)
+{
+    out.clear();
     writeU32(out, update.serverTick);
     writeU32(out, static_cast<std::uint32_t>(update.players.size()));
     for (const auto& player : update.players) {
@@ -497,7 +504,6 @@ std::vector<std::uint8_t> encodeStateUpdatePayload(const StateUpdateData& update
     writeU16(out, update.winnerSlot);
     writeString(out, update.selectedMap);
     writeBool(out, update.selectedTiebreak);
-    return out;
 }
 
 StateUpdateData decodeStateUpdatePayload(const std::vector<std::uint8_t>& payload)

@@ -175,13 +175,14 @@ void Simulation::step(const std::span<const InputFrame> inputs)
 {
     // Snapshot start-of-tick positions so player-vs-player collisions are
     // resolved against a stable per-tick state (order-independent).
-    const std::vector<PlayerState> snapshot = state_.players;
+    // Reuse the persistent scratch vector to avoid a per-tick heap allocation.
+    playerSnapshot_ = state_.players;
     for (std::size_t playerIndex = 0; playerIndex < state_.players.size(); ++playerIndex) {
         if (!state_.players[playerIndex].active) {
             continue;
         }
         const InputFrame input = (playerIndex < inputs.size()) ? inputs[playerIndex] : InputFrame {};
-        integratePlayer(state_.players[playerIndex], input, snapshot, playerIndex);
+        integratePlayer(state_.players[playerIndex], input, playerSnapshot_, playerIndex);
     }
     resolvePlayerPushes();
     stepActors();
@@ -577,6 +578,15 @@ void Simulation::stepActors()
     // out at ~6 tiles peak — enough headroom for 4-tile-tall walls plus
     // margin and enough airtime to cross wide platform tops.
     constexpr float kActorGravityHeld = -31.0F;
+
+    // Pre-build a compact list of active player pointers so MoveToPlayer
+    // actors scan only active slots instead of iterating 500 entries per actor.
+    activePlayerCache_.clear();
+    for (auto& p : state_.players) {
+        if (p.active) {
+            activePlayerCache_.push_back(&p);
+        }
+    }
     constexpr float kActorMaxFall = -16.0F;
     constexpr float kActorJumpLaunchVelocity = 20.75F; // matches player launch
     constexpr float kActorJumpVelocity = 16.0F;        // simple impulse for canJumpRandom
@@ -607,14 +617,11 @@ void Simulation::stepActors()
             actor.velocity.x = (actor.facingRight ? 1.0F : -1.0F) * kActorRandomSpeed;
         } else { // MoveToPlayer
             float bestDist = std::numeric_limits<float>::infinity();
-            for (const auto& p : state_.players) {
-                if (!p.active) {
-                    continue;
-                }
-                const float d = std::fabs(p.position.x - actor.position.x);
+            for (PlayerState* p : activePlayerCache_) {
+                const float d = std::fabs(p->position.x - actor.position.x);
                 if (d < bestDist) {
                     bestDist = d;
-                    target = &p;
+                    target = p;
                 }
             }
             if (target != nullptr) {
@@ -790,11 +797,10 @@ void Simulation::stepActors()
         const float aBot = actor.position.y;
         const float aTop = aBot + 1.0F;    // matches kActorHeight
 
-        for (std::size_t pi = 0; pi < state_.players.size(); ++pi) {
-            auto& p = state_.players[pi];
-            if (!p.active) {
-                continue;
-            }
+        for (std::size_t pi = 0; pi < activePlayerCache_.size(); ++pi) {
+            auto& p = *activePlayerCache_[pi];
+            const std::size_t playerIndex = static_cast<std::size_t>(
+                activePlayerCache_[pi] - state_.players.data());
             const float pLeft = p.position.x;
             const float pRight = pLeft + kPlayerWidthTiles;
             const float pBot = p.position.y;
@@ -823,7 +829,7 @@ void Simulation::stepActors()
                     p.powerupTransitionFrames = kPowerupTransitionFrames;
                     ActorDamageEvent ev {};
                     ev.actorIndex = static_cast<std::uint16_t>(ai);
-                    ev.playerIndex = static_cast<std::uint16_t>(pi);
+                    ev.playerIndex = static_cast<std::uint16_t>(playerIndex);
                     state_.damageEvents.push_back(ev);
                     break;
                 }
@@ -852,7 +858,7 @@ void Simulation::stepActors()
                 p.jumpHoldFrames = 0U;
                 ActorDamageEvent ev {};
                 ev.actorIndex = static_cast<std::uint16_t>(ai);
-                ev.playerIndex = static_cast<std::uint16_t>(pi);
+                ev.playerIndex = static_cast<std::uint16_t>(playerIndex);
                 state_.damageEvents.push_back(ev);
                 break;
             }
@@ -865,7 +871,7 @@ void Simulation::stepActors()
             //            state reset.
             ActorDamageEvent ev {};
             ev.actorIndex = static_cast<std::uint16_t>(ai);
-            ev.playerIndex = static_cast<std::uint16_t>(pi);
+            ev.playerIndex = static_cast<std::uint16_t>(playerIndex);
             state_.damageEvents.push_back(ev);
 
             if (p.style == PlayerStyle::Big) {

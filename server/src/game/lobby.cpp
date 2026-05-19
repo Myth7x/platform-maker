@@ -14,6 +14,7 @@ std::optional<std::uint16_t> Lobby::tryAssignSlot(socket_t fd) noexcept
     for (std::size_t i = 0; i < slots.size(); ++i) {
         if (slots[i] == kInvalidSocket) {
             slots[i] = fd;
+            rosterDirty_ = true;
             return static_cast<std::uint16_t>(i);
         }
     }
@@ -29,6 +30,9 @@ bool Lobby::removeFd(socket_t fd) noexcept
             changed = true;
         }
     }
+    if (changed) {
+        rosterDirty_ = true;
+    }
     return changed;
 }
 
@@ -43,10 +47,13 @@ std::uint32_t Lobby::playerCount() const noexcept
     return count;
 }
 
-std::vector<opm::protocol::PlayerInfo> Lobby::roster() const
+const std::vector<opm::protocol::PlayerInfo>& Lobby::roster() const
 {
-    std::vector<opm::protocol::PlayerInfo> out;
-    out.reserve(slots.size());
+    if (!rosterDirty_) {
+        return cachedRoster_;
+    }
+    cachedRoster_.clear();
+    cachedRoster_.reserve(slots.size());
     for (std::size_t i = 0; i < slots.size(); ++i) {
         opm::protocol::PlayerInfo info;
         info.playerIndex = static_cast<std::uint16_t>(i);
@@ -55,9 +62,10 @@ std::vector<opm::protocol::PlayerInfo> Lobby::roster() const
         info.colorG = static_cast<std::uint8_t>((59U * static_cast<std::uint32_t>(i) + 96U) % 256U);
         info.colorB = static_cast<std::uint8_t>((83U * static_cast<std::uint32_t>(i) + 128U) % 256U);
         info.displayName = "Player " + std::to_string(i + 1U);
-        out.push_back(std::move(info));
+        cachedRoster_.push_back(std::move(info));
     }
-    return out;
+    rosterDirty_ = false;
+    return cachedRoster_;
 }
 
 } // namespace opm::server

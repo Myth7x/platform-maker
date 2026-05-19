@@ -3,7 +3,7 @@
 #include "opm/tile_metadata.hpp"
 
 #include <cstdint>
-#include <map>
+#include <unordered_map>
 #include <vector>
 
 namespace opm::engine {
@@ -69,7 +69,7 @@ struct LevelData {
     // Per-tile-id collision overrides. Keyed by base tile id (rotation
     // bits stripped). Tiles not in the map use their default mask from
     // collisionMaskForTile. Edited per-level via the editor's inspector.
-    std::map<std::uint16_t, TileCollisionMask> tileCollisionOverrides {};
+    std::unordered_map<std::uint16_t, TileCollisionMask> tileCollisionOverrides {};
 };
 
 [[nodiscard]] LevelData createBasicLevel(std::uint32_t width, std::uint32_t height);

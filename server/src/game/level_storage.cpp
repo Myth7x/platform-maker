@@ -30,12 +30,21 @@ bool LevelStorage::isSafeName(std::string_view name) noexcept
     return true;
 }
 
-std::vector<std::string> LevelStorage::listNames()
+const std::vector<std::string>& LevelStorage::listNames()
 {
-    std::vector<std::string> names;
+    if (!namesCacheValid_) {
+        refreshNameCache();
+    }
+    return cachedNames_;
+}
+
+void LevelStorage::refreshNameCache()
+{
+    cachedNames_.clear();
     std::error_code ec;
     if (!std::filesystem::exists(directory_, ec)) {
-        return names;
+        namesCacheValid_ = true;
+        return;
     }
     for (const auto& entry : std::filesystem::directory_iterator(directory_, ec)) {
         if (ec) {
@@ -52,10 +61,10 @@ std::vector<std::string> LevelStorage::listNames()
         if (!isSafeName(stem)) {
             continue;
         }
-        names.push_back(stem);
+        cachedNames_.push_back(stem);
     }
-    std::sort(names.begin(), names.end());
-    return names;
+    std::sort(cachedNames_.begin(), cachedNames_.end());
+    namesCacheValid_ = true;
 }
 
 bool LevelStorage::load(std::string_view name, opm::engine::LevelData& out, std::string& error) const
@@ -142,6 +151,8 @@ bool LevelStorage::save(std::string_view name, const opm::engine::LevelData& lev
             return false;
         }
     }
+    // A new file may have been created — invalidate the name cache.
+    namesCacheValid_ = false;
     return true;
 }
 

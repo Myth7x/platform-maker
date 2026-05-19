@@ -4,8 +4,8 @@ namespace opm::server {
 
 LobbyManager::LobbyManager()
 {
-    lobbies_.push_back(Lobby {.name = "default_lobby", .capacity = 500U});
-    lobbies_.push_back(Lobby {.name = "race_lobby", .capacity = 500U});
+    lobbies_.push_back(Lobby {"default_lobby", 500U});
+    lobbies_.push_back(Lobby {"race_lobby", 500U});
 }
 
 Lobby* LobbyManager::find(std::string_view name) noexcept
@@ -25,7 +25,7 @@ bool LobbyManager::create(std::string_view name)
         return false;
     }
     // Create new lobby with default capacity of 2
-    lobbies_.push_back(Lobby {.name = std::string(name), .capacity = 2U});
+    lobbies_.push_back(Lobby {std::string(name), 2U});
     return true;
 }
 

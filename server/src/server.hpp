@@ -4,9 +4,11 @@
 #include "game/lobby_manager.hpp"
 #include "net/connection_table.hpp"
 #include "net/scoped_socket.hpp"
+#include "net/socket_compat.hpp"
 #include "net/wire.hpp"
 #include "opm/engine.hpp"
 #include "opm/protocol.hpp"
+#include "runtime/tick_pacer.hpp"
 
 #include <array>
 #include <chrono>
@@ -61,6 +63,10 @@ private:
     void tickBroadcastState();
     void tickProcessSendFailures();
     void tickReportStats();
+    // Poll all connection fds during the idle window between ticks so that
+    // latency-sensitive messages (Ping → Pong) are handled without waiting a
+    // full tick period. Game logic is NOT run in this path.
+    void idleIO(std::chrono::steady_clock::time_point tickDeadline);
 
     // ---- game-phase helpers ----
     void enterPreGame();
@@ -121,6 +127,12 @@ private:
     std::vector<std::uint8_t> scratchPayload_;
     WireBuilder scratchWire_;
     WireBuilder broadcastWire_;
+    // Scratch state-update struct reused each tick to avoid per-tick heap
+    // allocation for the players/actors vectors inside StateUpdateData.
+    opm::protocol::StateUpdateData scratchStateUpdate_ {};
+
+    // Scratch fd-set reused by idleIO() to avoid per-tick allocation.
+    std::vector<pollfd_t> idlePollFds_;
 
     // Self-measurement of tick rate.
     std::chrono::steady_clock::time_point statsAnchor_ {};
